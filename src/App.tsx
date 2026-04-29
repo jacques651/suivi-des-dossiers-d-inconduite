@@ -75,7 +75,7 @@ function App() {
               visibleFrom="sm"
               size="sm"
             />
-            <Text size="xl" fw={700} c="white">BD-SDI</Text>
+            <Text size="xl" fw={700} c="white">Suivi des Dossiers d'Inconduite</Text>
             <Text size="sm" c="gray.3" ml="md" visibleFrom="sm">Suivi des Inspections et Dossiers Disciplinaires</Text>
           </Group>
         </AppShell.Header>

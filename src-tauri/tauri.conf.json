@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "bd-sdi-app",
+  "productName": "suivi-dossiers",
   "version": "0.1.0",
   "identifier": "com.user.bd-sdi-app",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "BD-SDI - Suivi des Inspections",
+        "title": "Suivi des Dossiers d'Inconduite",
         "width": 1200,
         "height": 800,
         "resizable": true,

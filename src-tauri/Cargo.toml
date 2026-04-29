@@ -1,5 +1,5 @@
 [package]
-name = "bd-sdi-app"
+name = "suivi-dossiers"
 version = "0.1.0"
 description = "A Tauri App"
 authors = ["you"]
@@ -7,7 +7,7 @@ edition = "2021"
 
 # Configuration pour que Tauri trouve le point d'entrée
 [[bin]]
-name = "bd-sdi-app"
+name = "suivi-dossiers"
 path = "src/main.rs"
 
 [build-dependencies]

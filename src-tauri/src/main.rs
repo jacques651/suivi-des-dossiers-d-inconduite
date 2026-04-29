@@ -16,13 +16,13 @@ fn init_db() -> Result<Connection> {
         // En développement : utiliser le dossier target (non surveillé)
         let current_exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let target_dir = current_exe.parent().unwrap_or_else(|| std::path::Path::new("."));
-        target_dir.join("bd_sdi.db").to_str().unwrap_or("bd_sdi.db").to_string()
+        target_dir.join("suivi_dossiers.db").to_str().unwrap_or("suivi_dossiers.db").to_string()
     } else {
         // En production : utiliser le dossier AppData
         let app_data = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
         let app_folder = format!("{}/bd_sdi", app_data);
         let _ = std::fs::create_dir_all(&app_folder);
-        format!("{}/bd_sdi.db", app_folder)
+        format!("{}/suivi_dossiers.db", app_folder)
     };
     
     println!("Database path: {}", db_path);
