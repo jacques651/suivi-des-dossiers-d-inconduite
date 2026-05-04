@@ -7,23 +7,19 @@ import {
   ScrollArea, Center, Alert, Menu, Progress
 } from '@mantine/core';
 import { useForm } from '@mantine/form';
-import { 
+import {
   IconEdit, IconTrash, IconPlus, IconEye, IconSearch,
-  IconGavel, IconBuilding, IconFileText,
-  IconRefresh, IconDownload, IconPrinter, 
+  IconGavel,
+  IconRefresh, IconDownload, IconPrinter,
   IconFileExcel, IconFile, IconFileWord, IconInfoCircle,
-  IconCheck, IconX, IconAlertCircle
+  IconCheck, IconX, IconAlertCircle, IconClock
 } from '@tabler/icons-react';
 import { invoke } from '@tauri-apps/api/core';
 import { notifications } from '@mantine/notifications';
-import { save } from '@tauri-apps/plugin-dialog';
-import { writeFile } from '@tauri-apps/plugin-fs';
-import dayjs from 'dayjs';
-import * as XLSX from 'xlsx';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import { usePrint } from '../hooks/usePrint';
 
 interface Dossier {
+  Grade: string;
   DossierID: number;
   PersonnelID: number;
   TypeInconduite?: string;
@@ -53,9 +49,16 @@ interface Agent {
   Entite?: string;
 }
 
+interface ServiceInvestigation {
+  ServiceID: number;
+  LibelleService: string;
+  Acronyme?: string;
+}
+
 export default function Dossiers() {
   const [dossiers, setDossiers] = useState<Dossier[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [services, setServices] = useState<ServiceInvestigation[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [viewModalOpen, setViewModalOpen] = useState(false);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
@@ -70,28 +73,37 @@ export default function Dossiers() {
   const [infoModalOpen, setInfoModalOpen] = useState(false);
   const itemsPerPage = 10;
 
-  const typeInconduiteOptions = [
+  const [currentEtat, setCurrentEtat] = useState('En cours');
+  const isEtatEnCours = currentEtat === 'En cours';
+
+  // Options dynamiques
+  const [typeInconduiteOptions, setTypeInconduiteOptions] = useState<string[]>([
     'Faute professionnelle',
     'Abus de pouvoir',
     'Corruption',
     'Négligence',
     'Absence injustifiée',
     'Insoumission',
-    'Violation des consignes',
-    'Autre'
-  ];
+    'Violation des consignes'
+  ]);
+  const { printDocument } = usePrint();
+  const suiteReserveeOptions = ['Sanctionné(e)', 'Acquitté(e)', 'Classé sans suite', 'En instance'];
+  const typeSanctionOptions = ['Sanction administrative', 'Sanction judiciaire', 'Sanction disciplinaire', 'Aucune'];
+  const etatOptions = ['En cours', 'Suspendu', 'Clôturé'];
 
-  const typeSanctionOptions = [
+  const sanctionOptions = [
     'Avertissement',
     'Blâme',
     'Suspension',
     'Rétrogradation',
     'Révocation',
     'Licenciement',
-    'Aucune'
+    'Mutation',
+    'Mise à pied',
+    'Rappel à l\'ordre',
+    'Exclusion temporaire',
+    'Exclusion définitive'
   ];
-
-  const etatOptions = ['En cours', 'Suspendu', 'Clôturé'];
 
   const form = useForm({
     initialValues: {
@@ -115,11 +127,41 @@ export default function Dossiers() {
     },
   });
 
+  // Ajoute cet état avec les autres
+  const [rapports, setRapports] = useState<any[]>([]);
+
+  // Ajoute cette fonction de chargement
+  const loadRapports = async () => {
+    try {
+      const result = await invoke('get_rapports_list');
+      setRapports(result as any[]);
+    } catch (error) {
+      console.error('Erreur chargement rapports:', error);
+    }
+  };
+
+  // Dans le useEffect, ajoute :
   useEffect(() => {
     loadDossiers();
     loadAgents();
+    loadServices();
+    loadTypeInconduiteOptions();
+    loadRapports(); // ← Ajoute cette ligne
   }, []);
 
+  // Chargement initial
+  useEffect(() => {
+    loadDossiers();
+    loadAgents();
+    loadServices();
+    loadTypeInconduiteOptions();
+  }, []);
+
+  useEffect(() => {
+    setCurrentEtat(form.values.Etat || 'En cours');
+  }, [form.values.Etat]);
+
+  // Fonctions de chargement
   const loadDossiers = async () => {
     setLoading(true);
     try {
@@ -141,29 +183,75 @@ export default function Dossiers() {
     }
   };
 
+
+  const loadServices = async () => {
+    try {
+      const result = await invoke('get_services_investigation');
+      setServices(result as ServiceInvestigation[]);
+    } catch (error) {
+      console.error('Erreur chargement services:', error);
+    }
+  };
+
+  const loadTypeInconduiteOptions = async () => {
+    try {
+      const result = await invoke('get_dossiers');
+      const dossiersData = result as Dossier[];
+      const uniqueTypes = [...new Set(dossiersData.map(d => d.TypeInconduite).filter(Boolean))] as string[];
+      if (uniqueTypes.length > 0) {
+        setTypeInconduiteOptions(prev => [...new Set([...prev, ...uniqueTypes])]);
+      }
+    } catch (error) {
+      console.error('Erreur chargement types inconduite:', error);
+    }
+  };
+
+  // CRUD Operations
   const handleSubmit = async (values: typeof form.values) => {
     try {
+      if (!values.PersonnelID) {
+        throw new Error("Veuillez sélectionner un agent");
+      }
+
       const dossierData = {
         ...values,
-        PersonnelID: parseInt(values.PersonnelID),
-        Annee: parseInt(values.Annee.toString()),
+        PersonnelID: Number(values.PersonnelID), // 🔥 sécurisé
+        Annee: values.Annee ? Number(values.Annee) : null,
         DossierID: editingId,
       };
 
       if (editingId) {
         await invoke('update_dossier', { dossier: dossierData });
-        notifications.show({ title: 'Succès', message: 'Dossier modifié', color: 'green', icon: <IconCheck size={16} /> });
+        notifications.show({
+          title: 'Succès',
+          message: 'Dossier modifié',
+          color: 'green',
+          icon: <IconCheck size={16} />
+        });
       } else {
         await invoke('create_dossier', { dossier: dossierData });
-        notifications.show({ title: 'Succès', message: 'Dossier créé', color: 'green', icon: <IconCheck size={16} /> });
+        notifications.show({
+          title: 'Succès',
+          message: 'Dossier créé',
+          color: 'green',
+          icon: <IconCheck size={16} />
+        });
       }
-      
+
       setModalOpen(false);
       form.reset();
       setEditingId(null);
+      setCurrentEtat('En cours');
       loadDossiers();
+      loadTypeInconduiteOptions();
+
     } catch (error) {
-      notifications.show({ title: 'Erreur', message: `Erreur: ${error}`, color: 'red', icon: <IconX size={16} /> });
+      notifications.show({
+        title: 'Erreur',
+        message: `Erreur: ${error}`,
+        color: 'red',
+        icon: <IconX size={16} />
+      });
     }
   };
 
@@ -180,8 +268,9 @@ export default function Dossiers() {
     }
   };
 
+  // Utilitaires
   const getEtatColor = (etat?: string) => {
-    switch(etat) {
+    switch (etat) {
       case 'Clôturé': return 'green';
       case 'En cours': return 'blue';
       case 'Suspendu': return 'orange';
@@ -190,205 +279,74 @@ export default function Dossiers() {
   };
 
   const getTypeInconduiteColor = (type?: string) => {
-    switch(type) {
-      case 'Faute professionnelle': return 'red';
-      case 'Abus de pouvoir': return 'orange';
-      case 'Corruption': return 'darkred';
-      case 'Négligence': return 'yellow';
-      case 'Absence injustifiée': return 'gray';
-      default: return 'blue';
-    }
+    const colors: Record<string, string> = {
+      'Faute professionnelle': 'red',
+      'Abus de pouvoir': 'orange',
+      'Corruption': 'darkred',
+      'Négligence': 'yellow',
+      'Absence injustifiée': 'gray',
+    };
+    return colors[type || ''] || 'blue';
   };
 
-  // Export EXCEL
+  // Exports
   const exportToExcel = async () => {
-    try {
-      setExporting(true);
-      const filePath = await save({
-        title: "Exporter la liste des dossiers",
-        filters: [{ name: 'Excel', extensions: ['xlsx'] }],
-        defaultPath: `dossiers_${dayjs().format('YYYY-MM-DD_HH-mm')}.xlsx`
-      });
-      if (!filePath) { setExporting(false); return; }
-
-      const data = filteredDossiers.map(d => ({
-        'N° Dossier': d.DossierID,
-        'Agent': `${d.AgentNom} ${d.AgentPrenom}`,
-        'Matricule': d.AgentMatricule,
-        "Type d'inconduite": d.TypeInconduite || '',
-        'Période': d.PeriodeInconduite || '',
-        'Année': d.Annee || '',
-        "Service d'investigation": d.ServiceInvestigation || '',
-        'État': d.Etat || 'En cours',
-        'Type de sanction': d.TypeSanction || '',
-        'Sanction': d.Sanction || '',
-        'Observations': d.Observations || '',
-      }));
-
-      const ws = XLSX.utils.json_to_sheet(data);
-      ws['!cols'] = [{ wch: 12 }, { wch: 25 }, { wch: 15 }, { wch: 25 }, { wch: 20 }, { wch: 10 }, { wch: 30 }, { wch: 12 }, { wch: 20 }, { wch: 25 }, { wch: 40 }];
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Dossiers');
-      await writeFile(filePath, new Uint8Array(XLSX.write(wb, { type: 'array', bookType: 'xlsx' })));
-      notifications.show({ title: 'Succès', message: 'Export Excel réussi !', color: 'green', icon: <IconCheck size={16} /> });
-    } catch (error) {
-      notifications.show({ title: 'Erreur', message: 'Erreur lors de l\'export', color: 'red', icon: <IconX size={16} /> });
-    } finally {
-      setExporting(false);
-    }
+    setExporting(true);
+    await new Promise(r => setTimeout(r, 500));
+    notifications.show({ title: 'Info', message: 'Export Excel à implémenter', color: 'blue' });
+    setExporting(false);
   };
 
-  // Export PDF
   const exportToPDF = async () => {
-    try {
-      setExporting(true);
-      const filePath = await save({
-        title: "Exporter la liste des dossiers en PDF",
-        filters: [{ name: 'PDF', extensions: ['pdf'] }],
-        defaultPath: `dossiers_${dayjs().format('YYYY-MM-DD_HH-mm')}.pdf`
-      });
-      if (!filePath) { setExporting(false); return; }
-
-      const doc = new jsPDF('landscape', 'mm', 'a4');
-      doc.setFillColor(27, 54, 93);
-      doc.rect(0, 0, 297, 40, 'F');
-      doc.setTextColor(255, 255, 255);
-      doc.setFontSize(22);
-      doc.text('LISTE DES DOSSIERS DISCIPLINAIRES', 148.5, 20, { align: 'center' });
-      doc.setFontSize(10);
-      doc.text(`Généré le : ${dayjs().format('DD/MM/YYYY HH:mm')}`, 148.5, 32, { align: 'center' });
-      doc.setTextColor(0, 0, 0);
-      doc.text(`Total dossiers : ${filteredDossiers.length}`, 14, 50);
-
-      const head = ['N°', 'Agent', 'Matricule', "Type d'inconduite", 'Période', 'Service investigation', 'État', 'Sanction'];
-      const body = filteredDossiers.map((d, idx) => [
-        (idx + 1).toString(),
-        `${d.AgentNom} ${d.AgentPrenom}`,
-        d.AgentMatricule || '',
-        d.TypeInconduite || '',
-        d.PeriodeInconduite || '',
-        d.ServiceInvestigation || '',
-        d.Etat || 'En cours',
-        d.Sanction || ''
-      ]);
-
-      autoTable(doc, {
-        head: [head],
-        body: body as any[],
-        startY: 60,
-        theme: 'striped',
-        headStyles: { fillColor: [27, 54, 93], textColor: 255, fontStyle: 'bold', halign: 'center' },
-        styles: { fontSize: 8, cellPadding: 2 }
-      });
-
-      await writeFile(filePath, new Uint8Array(doc.output('arraybuffer')));
-      notifications.show({ title: 'Succès', message: 'Export PDF réussi !', color: 'green', icon: <IconCheck size={16} /> });
-    } catch (error) {
-      notifications.show({ title: 'Erreur', message: 'Erreur lors de l\'export', color: 'red', icon: <IconX size={16} /> });
-    } finally {
-      setExporting(false);
-    }
+    setExporting(true);
+    await new Promise(r => setTimeout(r, 500));
+    notifications.show({ title: 'Info', message: 'Export PDF à implémenter', color: 'blue' });
+    setExporting(false);
   };
 
-  // Export Word
   const exportToWord = async () => {
-    try {
-      setExporting(true);
-      const filePath = await save({
-        title: "Exporter la liste des dossiers en Word",
-        filters: [{ name: 'Word Document', extensions: ['doc'] }],
-        defaultPath: `dossiers_${dayjs().format('YYYY-MM-DD_HH-mm')}.doc`
-      });
-      if (!filePath) { setExporting(false); return; }
+    setExporting(true);
+    await new Promise(r => setTimeout(r, 500));
+    notifications.show({ title: 'Info', message: 'Export Word à implémenter', color: 'blue' });
+    setExporting(false);
+  };
 
-      const rows = filteredDossiers.map((d, idx) => `
-        <tr>
-          <td style="border:1px solid #ddd;padding:8px;text-align:center">${idx + 1}</td>
-          <td style="border:1px solid #ddd;padding:8px"><strong>${d.AgentNom} ${d.AgentPrenom}</strong><br/><small>${d.AgentMatricule || ''}</small></td>
-          <td style="border:1px solid #ddd;padding:8px">${d.TypeInconduite || '-'}</td>
-          <td style="border:1px solid #ddd;padding:8px">${d.PeriodeInconduite || '-'}</td>
-          <td style="border:1px solid #ddd;padding:8px">${d.ServiceInvestigation || '-'}</td>
-          <td style="border:1px solid #ddd;padding:8px">${d.Etat || 'En cours'}</td>
-          <td style="border:1px solid #ddd;padding:8px">${d.Sanction || '-'}</td>
+  const handlePrint = (orientation: 'portrait' | 'landscape') => {
+
+    const rows = filteredDossiers.map((d, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td>${d.AgentMatricule || '-'}</td>
+      <td>${d.AgentNom || ''} ${d.AgentPrenom || ''}</td>
+      <td>${d.Grade || '-'}</td>
+      <td>${d.TypeInconduite || '-'}</td>
+      <td>${d.ServiceInvestigation || '-'}</td>
+      <td>${d.Etat || '-'}</td>
+      <td>${d.Sanction || '-'}</td>
+    </tr>
+  `).join('');
+
+    const content = `
+    <table style="width:100%; border-collapse: collapse;">
+      <thead>
+        <tr style="background:#1b365d;color:white;">
+          <th>N°</th>
+          <th>Matricule</th>
+          <th>Agent</th>
+          <th>Grade</th>
+          <th>Inconduite</th>
+          <th>Service</th>
+          <th>État</th>
+          <th>Sanction</th>
         </tr>
-      `).join('');
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
 
-      const htmlContent = `<!DOCTYPE html>
-      <html>
-      <head><meta charset="UTF-8"><title>Liste des dossiers disciplinaires</title>
-      <style>
-        body { font-family: 'Calibri', Arial, sans-serif; margin: 40px; }
-        h1 { color: #1b365d; border-bottom: 3px solid #1b365d; padding-bottom: 10px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-        th { background-color: #1b365d; color: white; padding: 10px; border: 1px solid #ddd; }
-        td { padding: 8px; border: 1px solid #ddd; }
-        tr:nth-child(even) { background-color: #f9f9f9; }
-      </style>
-      </head>
-      <body>
-        <h1>📋 LISTE DES DOSSIERS DISCIPLINAIRES</h1>
-        <p>Généré le ${dayjs().format('DD/MM/YYYY HH:mm')}</p>
-        <p>Total dossiers : ${filteredDossiers.length}</p>
-        <table><thead><tr><th>N°</th><th>Agent</th><th>Type d'inconduite</th><th>Période</th><th>Service investigation</th><th>État</th><th>Sanction</th></tr></thead><tbody>${rows}</tbody></table>
-      </body>
-      </html>`;
-
-      await writeFile(filePath, new TextEncoder().encode(htmlContent));
-      notifications.show({ title: 'Succès', message: 'Export Word réussi !', color: 'green', icon: <IconCheck size={16} /> });
-    } catch (error) {
-      notifications.show({ title: 'Erreur', message: 'Erreur lors de l\'export', color: 'red', icon: <IconX size={16} /> });
-    } finally {
-      setExporting(false);
-    }
+    printDocument(content, 'LISTE DES DOSSIERS', orientation);
   };
-
-  // Impression
-  const handlePrint = () => {
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) {
-      notifications.show({ title: 'Erreur', message: 'Veuillez autoriser les popups', color: 'red', icon: <IconX size={16} /> });
-      return;
-    }
-
-    const rows = filteredDossiers.map((d, idx) => `
-      <tr>
-        <td style="border:1px solid #ddd;padding:8px;text-align:center">${idx + 1}</td>
-        <td style="border:1px solid #ddd;padding:8px"><strong>${d.AgentNom} ${d.AgentPrenom}</strong><br/><small>${d.AgentMatricule || ''}</small></td>
-        <td style="border:1px solid #ddd;padding:8px">${d.TypeInconduite || '-'}</td>
-        <td style="border:1px solid #ddd;padding:8px">${d.PeriodeInconduite || '-'}</td>
-        <td style="border:1px solid #ddd;padding:8px">${d.ServiceInvestigation || '-'}</td>
-        <td style="border:1px solid #ddd;padding:8px">${d.Etat || 'En cours'}</td>
-        <td style="border:1px solid #ddd;padding:8px">${d.Sanction || '-'}</td>
-      </tr>
-    `).join('');
-
-    printWindow.document.write(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="UTF-8"><title>Liste des dossiers disciplinaires</title>
-      <style>
-        body { font-family: 'Segoe UI', Arial, sans-serif; padding: 20px; }
-        h1 { color: #1b365d; border-bottom: 3px solid #1b365d; padding-bottom: 10px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-        th { background: #1b365d; color: white; padding: 10px; border: 1px solid #2a4a7a; }
-        td { padding: 8px; border: 1px solid #ddd; }
-        tr:nth-child(even) { background: #f9f9f9; }
-        @media print { body { padding: 0; margin: 0; } }
-      </style>
-      </head>
-      <body>
-        <h1>📋 LISTE DES DOSSIERS DISCIPLINAIRES</h1>
-        <p>Généré le ${dayjs().format('DD/MM/YYYY HH:mm')}</p>
-        <p>Total dossiers : ${filteredDossiers.length}</p>
-        <table><thead><tr><th>N°</th><th>Agent</th><th>Type d'inconduite</th><th>Période</th><th>Service investigation</th><th>État</th><th>Sanction</th></tr></thead><tbody>${rows}</tbody></table>
-        <script>window.onload = () => { window.print(); window.close(); };</script>
-      </body>
-      </html>
-    `);
-    printWindow.document.close();
-  };
-
-  // Filtrage des dossiers
+  // Filtrage et pagination
   const filteredDossiers = dossiers.filter(dossier => {
     const matchesSearch = `${dossier.AgentNom} ${dossier.AgentPrenom} ${dossier.AgentMatricule}`.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (dossier.TypeInconduite && dossier.TypeInconduite.toLowerCase().includes(searchTerm.toLowerCase()));
@@ -402,14 +360,46 @@ export default function Dossiers() {
     activePage * itemsPerPage
   );
 
+  const normalize = (val: string) => val.trim().toLowerCase();
+
+  const uniqueTypes = Array.from(
+    new Map(
+      typeInconduiteOptions.map((item) => [
+        normalize(item),
+        item.trim()
+      ])
+    ).values()
+  );
+
+
   const totalDossiers = dossiers.length;
   const enCours = dossiers.filter(d => d.Etat === 'En cours').length;
   const clotures = dossiers.filter(d => d.Etat === 'Clôturé').length;
   const suspendus = dossiers.filter(d => d.Etat === 'Suspendu').length;
 
-  const agentOptions: ComboboxItem[] = agents.map(agent => ({
-    value: agent.PersonnelID.toString(),
-    label: `${agent.Matricule} - ${agent.Nom} ${agent.Prenom}`
+  const agentOptions = agents.map((a) => ({
+    value: String(a.PersonnelID), // ✅ ce qui sera stocké
+    label: `${a.Matricule} - ${a.Nom} ${a.Prenom}`, // ✅ ce qui est affiché
+  }));
+
+  const moisOptions = [
+    { value: "Janvier", label: "Janvier" },
+    { value: "Février", label: "Février" },
+    { value: "Mars", label: "Mars" },
+    { value: "Avril", label: "Avril" },
+    { value: "Mai", label: "Mai" },
+    { value: "Juin", label: "Juin" },
+    { value: "Juillet", label: "Juillet" },
+    { value: "Août", label: "Août" },
+    { value: "Septembre", label: "Septembre" },
+    { value: "Octobre", label: "Octobre" },
+    { value: "Novembre", label: "Novembre" },
+    { value: "Décembre", label: "Décembre" },
+  ];
+
+  const serviceOptions: ComboboxItem[] = services.map(service => ({
+    value: service.LibelleService,
+    label: service.LibelleService  // Simplement le libellé, sans acronyme
   }));
 
   if (loading) {
@@ -440,7 +430,7 @@ export default function Dossiers() {
                   <Title order={1} c="white" size="h2">Dossiers Disciplinaires</Title>
                   <Text c="gray.3" size="sm">Gérez les dossiers disciplinaires des agents</Text>
                   <Group gap="xs" mt={8}>
-                    <Badge size="sm" variant="white" color="blue">BD-SDI v2.0</Badge>
+                    <Badge size="sm" variant="white" color="blue">Suivi Dossiers v2.0</Badge>
                     <Badge size="sm" variant="white" color="green">Justice administrative</Badge>
                   </Group>
                 </Box>
@@ -465,7 +455,7 @@ export default function Dossiers() {
             <Paper p="md" radius="lg" withBorder style={{ backgroundColor: '#e8f5e9' }}>
               <Group justify="space-between" mb="xs">
                 <Text size="xs" c="dimmed" tt="uppercase" fw={600}>En cours</Text>
-                <ThemeIcon size="lg" radius="md" color="green" variant="light"><IconFileText size={18} /></ThemeIcon>
+                <ThemeIcon size="lg" radius="md" color="green" variant="light"><IconClock size={18} /></ThemeIcon>
               </Group>
               <Text fw={800} size="xl" c="green">{enCours}</Text>
               <Progress value={totalDossiers > 0 ? (enCours / totalDossiers) * 100 : 0} size="sm" radius="xl" color="green" mt={8} />
@@ -515,12 +505,26 @@ export default function Dossiers() {
                     <Menu.Item leftSection={<IconFileWord size={16} color="#2980b9" />} onClick={exportToWord}>Word (.doc)</Menu.Item>
                   </Menu.Dropdown>
                 </Menu>
-                <Tooltip label="Imprimer">
-                  <ActionIcon onClick={handlePrint} size="lg" variant="light" color="teal">
-                    <IconPrinter size={18} />
-                  </ActionIcon>
-                </Tooltip>
-                <Button leftSection={<IconPlus size={16} />} onClick={() => { setEditingId(null); form.reset(); setModalOpen(true); }} variant="gradient" gradient={{ from: '#1b365d', to: '#2a4a7a' }}>
+                <Menu shadow="md" width={150}>
+                  <Menu.Target>
+                    <Tooltip label="Imprimer">
+                      <ActionIcon size="lg" variant="light" color="teal">
+                        <IconPrinter size={18} />
+                      </ActionIcon>
+                    </Tooltip>
+                  </Menu.Target>
+
+                  <Menu.Dropdown>
+                    <Menu.Item onClick={() => handlePrint('portrait')}>
+                      🧾 Portrait
+                    </Menu.Item>
+
+                    <Menu.Item onClick={() => handlePrint('landscape')}>
+                      📄 Paysage
+                    </Menu.Item>
+                  </Menu.Dropdown>
+                </Menu>
+                <Button leftSection={<IconPlus size={16} />} onClick={() => { setEditingId(null); form.reset(); setCurrentEtat('En cours'); setModalOpen(true); loadTypeInconduiteOptions(); }} variant="gradient" gradient={{ from: '#1b365d', to: '#2a4a7a' }}>
                   Nouveau Dossier
                 </Button>
               </Group>
@@ -553,28 +557,35 @@ export default function Dossiers() {
           </Card>
 
           {/* Tableau */}
-          <Card withBorder radius="lg" shadow="sm" p="0">
+          <Card withBorder radius="lg" shadow="sm" p="0" style={{ overflow: 'hidden' }}>
             <ScrollArea style={{ maxHeight: 500 }}>
-              <Table striped highlightOnHover>
+              <Table
+                striped
+                highlightOnHover
+
+                style={{ fontSize: '11px', minWidth: '1000px' }}
+              >
                 <Table.Thead style={{ backgroundColor: '#1b365d' }}>
                   <Table.Tr>
-                    <Table.Th style={{ color: 'white', width: 100 }}>N° Dossier</Table.Th>
-                    <Table.Th style={{ color: 'white' }}>Agent</Table.Th>
-                    <Table.Th style={{ color: 'white', width: 200 }}>Type d'inconduite</Table.Th>
-                    <Table.Th style={{ color: 'white', width: 200 }}>Service Investigation</Table.Th>
-                    <Table.Th style={{ color: 'white', width: 100 }}>État</Table.Th>
-                    <Table.Th style={{ color: 'white', width: 150 }}>Sanction</Table.Th>
-                    <Table.Th style={{ color: 'white', width: 120, textAlign: 'center' }}>Actions</Table.Th>
+                    <Table.Th style={{ color: 'white', width: '70px', fontSize: '11px', padding: '8px 4px' }}>N°</Table.Th>
+                    <Table.Th style={{ color: 'white', width: '30px', fontSize: '11px', padding: '6px 4px' }}>Matricule</Table.Th>
+                    <Table.Th style={{ color: 'white', width: '150px', fontSize: '11px', padding: '8px 4px' }}>Nom Prénom</Table.Th>
+                    <Table.Th style={{ color: 'white', width: '120px', fontSize: '11px', padding: '8px 4px' }}>Grade</Table.Th>
+                    <Table.Th style={{ color: 'white', width: '150px', fontSize: '11px', padding: '8px 4px' }}>Type d'inconduite</Table.Th>
+                    <Table.Th style={{ color: 'white', width: '160px', fontSize: '11px', padding: '8px 4px' }}>Service Investigation</Table.Th>
+                    <Table.Th style={{ color: 'white', width: '70px', fontSize: '11px', padding: '8px 4px' }}>État</Table.Th>
+                    <Table.Th style={{ color: 'white', width: '100px', fontSize: '11px', padding: '8px 4px' }}>Sanction</Table.Th>
+                    <Table.Th style={{ color: 'white', width: '120px', fontSize: '11px', padding: '8px 4px', textAlign: 'center' }}>Actions</Table.Th>
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
                   {paginatedDossiers.length === 0 ? (
                     <Table.Tr>
-                      <Table.Td colSpan={7}>
+                      <Table.Td colSpan={9}>
                         <Center py="xl">
                           <Stack align="center">
                             <IconGavel size={48} color="gray" />
-                            <Text c="dimmed">Aucun dossier trouvé</Text>
+                            <Text c="dimmed" size="sm">Aucun dossier trouvé</Text>
                           </Stack>
                         </Center>
                       </Table.Td>
@@ -582,86 +593,108 @@ export default function Dossiers() {
                   ) : (
                     paginatedDossiers.map((dossier) => (
                       <Table.Tr key={dossier.DossierID}>
-                        <Table.Td>
-                          <Badge variant="light" color="blue" size="lg">
-                            #{dossier.DossierID}
-                          </Badge>
+                        <Table.Td style={{ padding: '6px 4px' }}>
+                          <Badge variant="light" color="blue" size="sm" radius="md">{dossier.DossierID}</Badge>
                         </Table.Td>
-                        <Table.Td>
-                          <Group gap="sm" wrap="nowrap">
-                            <Avatar size="md" radius="xl" color="blue">
+                        <Table.Td style={{ padding: '4px 4px' }}>
+                          <Text size="xs" fw={500}>{dossier.AgentMatricule || '-'}</Text>
+                        </Table.Td>
+                        <Table.Td style={{ padding: '6px 4px' }}>
+                          <Group gap="xs" wrap="nowrap">
+                            <Avatar size="xs" radius="xl" color="blue">
                               {dossier.AgentNom?.charAt(0)}{dossier.AgentPrenom?.charAt(0)}
                             </Avatar>
                             <Box>
-                              <Text fw={500} size="sm">{dossier.AgentNom} {dossier.AgentPrenom}</Text>
-                              <Text size="xs" c="dimmed">{dossier.AgentMatricule}</Text>
+                              <Text size="xs" fw={500}>{dossier.AgentNom} {dossier.AgentPrenom}</Text>
                             </Box>
                           </Group>
                         </Table.Td>
-                        <Table.Td>
-                          <Badge color={getTypeInconduiteColor(dossier.TypeInconduite)} variant="light" size="md">
+                        <Table.Td style={{ padding: '6px 4px' }}>
+                          <Badge variant="light" color="cyan" size="xs">
+                            {dossier.Grade || 'Non défini'}
+                          </Badge>
+                        </Table.Td>
+                        <Table.Td style={{ padding: '6px 4px' }}>
+                          <Badge color={getTypeInconduiteColor(dossier.TypeInconduite)} variant="light" size="xs">
                             {dossier.TypeInconduite || '-'}
                           </Badge>
-                          {dossier.PeriodeInconduite && (
-                            <Text size="xs" c="dimmed" mt={4}>{dossier.PeriodeInconduite}</Text>
-                          )}
                         </Table.Td>
-                        <Table.Td>
+                        <Table.Td style={{ padding: '6px 4px' }}>
                           <Group gap="xs" wrap="nowrap">
-                            <IconBuilding size={14} color="gray" />
-                            <Text size="sm">{dossier.ServiceInvestigation || '-'}</Text>
+                            <Text size="xs" lineClamp={1}>{dossier.ServiceInvestigation || '-'}</Text>
                           </Group>
                         </Table.Td>
-                        <Table.Td>
-                          <Badge color={getEtatColor(dossier.Etat)} variant="filled" size="md">
+                        <Table.Td style={{ padding: '6px 4px' }}>
+                          <Badge color={getEtatColor(dossier.Etat)} variant="filled" size="xs">
                             {dossier.Etat || 'En cours'}
                           </Badge>
                         </Table.Td>
-                        <Table.Td>
+                        <Table.Td style={{ padding: '6px 4px' }}>
                           {dossier.Sanction ? (
-                            <Badge color="red" variant="light" size="md">
+                            <Badge color="red" variant="light" size="xs">
                               {dossier.Sanction}
                             </Badge>
                           ) : (
-                            <Text c="dimmed" size="sm">-</Text>
+                            <Text c="dimmed" size="xs">-</Text>
                           )}
                         </Table.Td>
-                        <Table.Td ta="center">
+                        <Table.Td style={{ padding: '6px 4px' }}>
                           <Group gap="xs" justify="center" wrap="nowrap">
                             <Tooltip label="Voir détails" withArrow>
-                              <ActionIcon onClick={() => {
-                                setSelectedDossier(dossier);
-                                setViewModalOpen(true);
-                              }} color="green" variant="light" size="sm">
+                              <ActionIcon
+                                onClick={() => {
+                                  console.log("Ouverture modal détails", dossier);
+                                  setSelectedDossier(dossier);
+                                  setViewModalOpen(true);
+                                }}
+                                color="green"
+                                variant="light"
+                                size="sm"
+                              >
                                 <IconEye size={16} />
                               </ActionIcon>
                             </Tooltip>
                             <Tooltip label="Modifier" withArrow>
-                              <ActionIcon onClick={() => {
-                                setEditingId(dossier.DossierID);
-                                form.setValues({
-                                  PersonnelID: dossier.PersonnelID.toString(),
-                                  TypeInconduite: dossier.TypeInconduite || '',
-                                  PeriodeInconduite: dossier.PeriodeInconduite || '',
-                                  Annee: dossier.Annee || new Date().getFullYear(),
-                                  ServiceInvestigation: dossier.ServiceInvestigation || '',
-                                  Etat: dossier.Etat || 'En cours',
-                                  SuiteReservee: dossier.SuiteReservee || '',
-                                  TypeSanction: dossier.TypeSanction || '',
-                                  Sanction: dossier.Sanction || '',
-                                  ActeSanction: dossier.ActeSanction || '',
-                                  NumeroActeSanction: dossier.NumeroActeSanction || '',
-                                  AutoriteSanction: dossier.AutoriteSanction || '',
-                                  Observations: dossier.Observations || '',
-                                  IDRapport: dossier.IDRapport?.toString() || '',
-                                });
-                                setModalOpen(true);
-                              }} color="blue" variant="light" size="sm">
+                              <ActionIcon
+                                onClick={() => {
+                                  setEditingId(dossier.DossierID);
+                                  setCurrentEtat(dossier.Etat || 'En cours');
+                                  form.setValues({
+                                    PersonnelID: dossier.PersonnelID.toString(),
+                                    TypeInconduite: dossier.TypeInconduite || '',
+                                    PeriodeInconduite: dossier.PeriodeInconduite || '',
+                                    Annee: dossier.Annee || new Date().getFullYear(),
+                                    ServiceInvestigation: dossier.ServiceInvestigation || '',
+                                    Etat: dossier.Etat || 'En cours',
+                                    SuiteReservee: dossier.SuiteReservee || '',
+                                    TypeSanction: dossier.TypeSanction || '',
+                                    Sanction: dossier.Sanction || '',
+                                    ActeSanction: dossier.ActeSanction || '',
+                                    NumeroActeSanction: dossier.NumeroActeSanction || '',
+                                    AutoriteSanction: dossier.AutoriteSanction || '',
+                                    Observations: dossier.Observations || '',
+                                    IDRapport: dossier.IDRapport?.toString() || '',
+                                  });
+                                  setModalOpen(true);
+                                  loadTypeInconduiteOptions();
+                                }}
+                                color="blue"
+                                variant="light"
+                                size="sm"
+                              >
                                 <IconEdit size={16} />
                               </ActionIcon>
                             </Tooltip>
                             <Tooltip label="Supprimer" withArrow>
-                              <ActionIcon onClick={() => { setDossierToDelete(dossier.DossierID); setDeleteModalOpen(true); }} color="red" variant="light" size="sm">
+                              <ActionIcon
+                                onClick={() => {
+                                  setDossierToDelete(dossier.DossierID);
+                                  setDeleteModalOpen(true);
+                                }}
+                                color="red"
+                                variant="light"
+                                size="sm"
+                              >
                                 <IconTrash size={16} />
                               </ActionIcon>
                             </Tooltip>
@@ -683,217 +716,232 @@ export default function Dossiers() {
         </Stack>
       </Container>
 
-      {/* Modal Formulaire */}
+      {/* Modal Formulaire - Version améliorée */}
+
       <Modal
         opened={modalOpen}
-        onClose={() => { setModalOpen(false); form.reset(); }}
+        onClose={() => {
+          setModalOpen(false);
+          form.reset();
+          setCurrentEtat('En cours');
+        }}
         title={
-          <Group gap="sm">
-            {editingId ? <IconEdit size={20} color="#1b365d" /> : <IconPlus size={20} color="#1b365d" />}
-            <Text fw={700} size="lg">{editingId ? "Modifier le Dossier" : "Nouveau Dossier"}</Text>
-          </Group>
+          <Text fw={600} size="md">
+            {editingId ? "Modifier le dossier" : "Nouveau dossier"}
+          </Text>
         }
-        size="xl"
+        size={650}
         centered
-        overlayProps={{ blur: 3 }}
-        transitionProps={{ transition: 'fade', duration: 200 }}
+        scrollAreaComponent={ScrollArea.Autosize}
+        styles={{
+          body: { maxHeight: '75vh', overflowY: 'auto', padding: 16 },
+        }}
       >
         <form onSubmit={form.onSubmit(handleSubmit)}>
           <Stack gap="md">
-            <Select
-              label="Agent concerné"
-              placeholder="Sélectionner un agent"
-              data={agentOptions}
-              {...form.getInputProps('PersonnelID')}
-              required
-              searchable
-              size="md"
-            />
-            <Grid>
-              <Grid.Col span={6}>
+
+            {/* ================= AGENT ================= */}
+            <Card withBorder radius="md" p="sm">
+              <Select
+                label="Agent concerné"
+                placeholder="Sélectionner un agent"
+                data={agentOptions}
+                value={form.values.PersonnelID || null}
+                onChange={(value) => {
+                  form.setFieldValue("PersonnelID", value || "");
+                }}
+                searchable
+                required
+                size="sm"
+              />
+            </Card>
+
+            {/* ================= INCONDUITE ================= */}
+            <Card withBorder radius="md" p="sm">
+
+              <Stack gap="xs">
+                {/* TYPE SEUL */}
                 <Select
                   label="Type d'inconduite"
-                  placeholder="Sélectionner"
-                  data={typeInconduiteOptions}
-                  {...form.getInputProps('TypeInconduite')}
-                  size="md"
+                  placeholder="Sélectionner ou saisir"
+                  data={uniqueTypes}
                   searchable
+                  clearable
+                  size="sm"
+                  value={form.values.TypeInconduite}
+                  onChange={(val) => form.setFieldValue('TypeInconduite', val || '')}
+                  onSearchChange={(q) => form.setFieldValue('TypeInconduite', q)}
                 />
-              </Grid.Col>
-              <Grid.Col span={6}>
-                <TextInput
-                  label="Année"
-                  type="number"
-                  {...form.getInputProps('Annee')}
-                  size="md"
-                />
-              </Grid.Col>
-              <Grid.Col span={12}>
-                <TextInput
-                  label="Période de l'inconduite"
-                  placeholder="Ex: Janvier - Mars 2024"
-                  {...form.getInputProps('PeriodeInconduite')}
-                  size="md"
-                />
-              </Grid.Col>
-              <Grid.Col span={12}>
-                <TextInput
-                  label="Service d'investigation"
-                  placeholder="Service ayant mené l'enquête"
-                  {...form.getInputProps('ServiceInvestigation')}
-                  size="md"
-                />
-              </Grid.Col>
-              <Grid.Col span={6}>
-                <Select
-                  label="État du dossier"
-                  data={etatOptions}
-                  {...form.getInputProps('Etat')}
-                  size="md"
-                />
-              </Grid.Col>
-              <Grid.Col span={6}>
-                <TextInput
-                  label="Suite réservée"
-                  placeholder="Décision ou suite donnée"
-                  {...form.getInputProps('SuiteReservee')}
-                  size="md"
-                />
-              </Grid.Col>
-              <Grid.Col span={6}>
-                <Select
-                  label="Type de sanction"
-                  data={typeSanctionOptions}
-                  {...form.getInputProps('TypeSanction')}
-                  size="md"
-                />
-              </Grid.Col>
-              <Grid.Col span={6}>
-                <TextInput
-                  label="Sanction"
-                  placeholder="Sanction prononcée"
-                  {...form.getInputProps('Sanction')}
-                  size="md"
-                />
-              </Grid.Col>
-              <Grid.Col span={6}>
-                <TextInput
-                  label="Acte de sanction"
-                  placeholder="Référence de l'acte"
-                  {...form.getInputProps('ActeSanction')}
-                  size="md"
-                />
-              </Grid.Col>
-              <Grid.Col span={6}>
-                <TextInput
-                  label="Numéro de l'acte"
-                  placeholder="Numéro officiel"
-                  {...form.getInputProps('NumeroActeSanction')}
-                  size="md"
-                />
-              </Grid.Col>
-              <Grid.Col span={12}>
-                <TextInput
-                  label="Autorité ayant prononcé la sanction"
-                  placeholder="Nom de l'autorité"
-                  {...form.getInputProps('AutoriteSanction')}
-                  size="md"
-                />
-              </Grid.Col>
-              <Grid.Col span={12}>
-                <Textarea
-                  label="Observations"
-                  placeholder="Informations complémentaires"
-                  rows={3}
-                  {...form.getInputProps('Observations')}
-                  size="md"
-                />
-              </Grid.Col>
-            </Grid>
-            <Group justify="flex-end" mt="md">
-              <Button variant="light" onClick={() => setModalOpen(false)}>Annuler</Button>
-              <Button type="submit" color="blue">{editingId ? 'Modifier' : 'Créer'}</Button>
+
+                {/* ANNÉE + MOIS */}
+                <Grid>
+                  <Grid.Col span={4}>
+                    <TextInput
+                      label="Année"
+                      placeholder="2025"
+                      type="number"
+                      {...form.getInputProps('Annee')}
+                      size="sm"
+                    />
+                  </Grid.Col>
+
+                  <Grid.Col span={8}>
+                    <Select
+                      label="Mois"
+                      placeholder="Sélectionner"
+                      data={moisOptions}
+                      value={form.values.PeriodeInconduite || null}
+                      onChange={(val) =>
+                        form.setFieldValue('PeriodeInconduite', val || '')
+                      }
+                      searchable
+                      clearable
+                      size="sm"
+                    />
+                  </Grid.Col>
+                </Grid>
+              </Stack>
+            </Card>
+
+            {/* ================= SUIVI ================= */}
+            <Card withBorder radius="md" p="sm">
+
+              {/* SERVICE SEUL */}
+              <Select
+                label="Service d'investigation"
+                placeholder="Sélectionner"
+                data={serviceOptions}
+                {...form.getInputProps('ServiceInvestigation')}
+                searchable
+                clearable
+                size="sm"
+              />
+              <Select
+                label="Rapport lié"
+                placeholder="Sélectionner un rapport (optionnel)"
+                data={rapports.map(r => ({
+                  value: String(r.RapportID),
+                  label: `${r.NumeroRapport} - ${r.LibelleRapport} (${new Date(r.DateRapport).toLocaleDateString('fr-FR')})`
+                }))}
+                value={form.values.IDRapport || null}
+                onChange={(value) => form.setFieldValue('IDRapport', value || '')}
+                searchable
+                clearable
+                size="sm"
+              />
+
+              {/* ETAT + SUITE */}
+              <Grid mt="xs">
+                <Grid.Col span={4}>
+                  <Select
+                    label="État du dossier"
+                    placeholder="État"
+                    data={etatOptions}
+                    {...form.getInputProps('Etat')}
+                    size="sm"
+                    onChange={(val) => {
+                      form.setFieldValue('Etat', val);
+                      setCurrentEtat(val || 'En cours');
+                    }}
+                  />
+                </Grid.Col>
+
+                <Grid.Col span={8}>
+                  <Select
+                    label="Suite réservée"
+                    placeholder="Sélectionner"
+                    data={suiteReserveeOptions}
+                    {...form.getInputProps('SuiteReservee')}
+                    disabled={isEtatEnCours}
+                    clearable
+                    size="sm"
+                  />
+                </Grid.Col>
+              </Grid>
+            </Card>
+
+            {/* ================= SANCTION ================= */}
+            {!isEtatEnCours && (
+              <Card withBorder radius="md" p="sm">
+
+                <Grid>
+                  <Grid.Col span={6}>
+                    <Select
+                      label="Type de sanction"
+                      data={typeSanctionOptions}
+                      {...form.getInputProps('TypeSanction')}
+                      size="sm"
+                      clearable
+                    />
+                  </Grid.Col>
+
+                  <Grid.Col span={6}>
+                    <Select
+                      label="Sanction"
+                      data={sanctionOptions}
+                      {...form.getInputProps('Sanction')}
+                      size="sm"
+                      clearable
+                    />
+                  </Grid.Col>
+
+                  <Grid.Col span={6}>
+                    <TextInput
+                      label="Acte"
+                      {...form.getInputProps('ActeSanction')}
+                      size="sm"
+                    />
+                  </Grid.Col>
+
+                  <Grid.Col span={6}>
+                    <TextInput
+                      label="Numéro"
+                      {...form.getInputProps('NumeroActeSanction')}
+                      size="sm"
+                    />
+                  </Grid.Col>
+
+                  <Grid.Col span={12}>
+                    <TextInput
+                      label="Autorité"
+                      {...form.getInputProps('AutoriteSanction')}
+                      size="sm"
+                    />
+                  </Grid.Col>
+                </Grid>
+              </Card>
+            )}
+
+            {/* ================= OBSERVATIONS ================= */}
+            <Textarea
+              label="Observations"
+              rows={2}
+              {...form.getInputProps('Observations')}
+              size="sm"
+            />
+
+            {/* ================= ACTIONS ================= */}
+            <Group justify="flex-end">
+              <Button
+                variant="subtle"
+                onClick={() => {
+                  setModalOpen(false);
+                  form.reset();
+                  setCurrentEtat('En cours');
+                }}
+              >
+                Annuler
+              </Button>
+
+              <Button type="submit">
+                {editingId ? 'Modifier' : 'Créer'}
+              </Button>
             </Group>
+
           </Stack>
         </form>
       </Modal>
 
-      {/* Modal Visualisation */}
-      <Modal
-        opened={viewModalOpen}
-        onClose={() => { setViewModalOpen(false); setSelectedDossier(null); }}
-        title={
-          <Group gap="sm">
-            <IconEye size={20} color="#1b365d" />
-            <Text fw={700} size="lg">Détail du Dossier Disciplinaire</Text>
-          </Group>
-        }
-        size="lg"
-        centered
-        overlayProps={{ blur: 3 }}
-        transitionProps={{ transition: 'fade', duration: 200 }}
-      >
-        {selectedDossier && (
-          <Stack gap="md">
-            <Card withBorder bg="blue.0" p="md">
-              <Group justify="space-between">
-                <Badge color="blue" size="lg">Dossier N° {selectedDossier.DossierID}</Badge>
-                <Badge color={getEtatColor(selectedDossier.Etat)} variant="filled">
-                  {selectedDossier.Etat || 'En cours'}
-                </Badge>
-              </Group>
-            </Card>
-            
-            <Divider />
-            
-            <Grid>
-              <Grid.Col span={12}>
-                <Text size="xs" c="dimmed">Agent concerné</Text>
-                <Text fw={600} size="md">{selectedDossier.AgentNom} {selectedDossier.AgentPrenom}</Text>
-                <Text size="sm" c="dimmed">Matricule: {selectedDossier.AgentMatricule}</Text>
-              </Grid.Col>
-              <Grid.Col span={6}>
-                <Text size="xs" c="dimmed">Type d'inconduite</Text>
-                <Badge color={getTypeInconduiteColor(selectedDossier.TypeInconduite)} variant="light" size="lg">
-                  {selectedDossier.TypeInconduite || '-'}
-                </Badge>
-              </Grid.Col>
-              <Grid.Col span={6}>
-                <Text size="xs" c="dimmed">Année / Période</Text>
-                <Text fw={500}>{selectedDossier.Annee || '-'} / {selectedDossier.PeriodeInconduite || '-'}</Text>
-              </Grid.Col>
-              <Grid.Col span={12}>
-                <Text size="xs" c="dimmed">Service d'investigation</Text>
-                <Text fw={500}>{selectedDossier.ServiceInvestigation || '-'}</Text>
-              </Grid.Col>
-              <Grid.Col span={6}>
-                <Text size="xs" c="dimmed">Type de sanction</Text>
-                <Text fw={500}>{selectedDossier.TypeSanction || '-'}</Text>
-              </Grid.Col>
-              <Grid.Col span={6}>
-                <Text size="xs" c="dimmed">Sanction prononcée</Text>
-                <Text fw={500} c="red">{selectedDossier.Sanction || '-'}</Text>
-              </Grid.Col>
-              <Grid.Col span={6}>
-                <Text size="xs" c="dimmed">Acte de sanction</Text>
-                <Text fw={500}>{selectedDossier.ActeSanction || '-'}</Text>
-              </Grid.Col>
-              <Grid.Col span={6}>
-                <Text size="xs" c="dimmed">Numéro de l'acte</Text>
-                <Text fw={500}>{selectedDossier.NumeroActeSanction || '-'}</Text>
-              </Grid.Col>
-              <Grid.Col span={12}>
-                <Text size="xs" c="dimmed">Autorité ayant prononcé la sanction</Text>
-                <Text fw={500}>{selectedDossier.AutoriteSanction || '-'}</Text>
-              </Grid.Col>
-              <Grid.Col span={12}>
-                <Text size="xs" c="dimmed">Observations</Text>
-                <Text fw={500}>{selectedDossier.Observations || '-'}</Text>
-              </Grid.Col>
-            </Grid>
-          </Stack>
-        )}
-      </Modal>
 
       {/* Modal Confirmation Suppression */}
       <Modal
@@ -942,17 +990,169 @@ export default function Dossiers() {
             <Text fw={600} size="sm" mb="md">📌 Fonctionnalités :</Text>
             <Stack gap="xs">
               <Text size="sm">1️⃣ Sélectionnez l'agent concerné par le dossier disciplinaire</Text>
-              <Text size="sm">2️⃣ Renseignez le type d'inconduite et la période</Text>
-              <Text size="sm">3️⃣ Précisez le service d'investigation</Text>
-              <Text size="sm">4️⃣ Indiquez la sanction prononcée et l'autorité</Text>
-              <Text size="sm">5️⃣ Suivez l'état du dossier (En cours, Suspendu, Clôturé)</Text>
+              <Text size="sm">2️⃣ Renseignez le type d'inconduite (liste dynamique avec ajout possible)</Text>
+              <Text size="sm">3️⃣ Choisissez le service d'investigation dans la liste déroulante</Text>
+              <Text size="sm">4️⃣ Pour ajouter une sanction, le dossier doit être à l'état "Clôturé" ou "Suspendu"</Text>
+              <Text size="sm">5️⃣ La suite réservée et les sanctions ne sont modifiables qu'après clôture</Text>
               <Text size="sm">6️⃣ Exportez la liste au format Excel, PDF ou Word</Text>
             </Stack>
           </Paper>
           <Divider />
-          <Text size="xs" c="dimmed" ta="center">Version 2.0.0 - BD-SDI</Text>
+          <Text size="xs" c="dimmed" ta="center">Version 2.0.0 - Suivi Dossiers</Text>
         </Stack>
       </Modal>
+
+      {/* Modal Voir Détails - Version compacte */}
+      <Modal
+        opened={viewModalOpen}
+        onClose={() => { setViewModalOpen(false); setSelectedDossier(null); }}
+        title={
+          <Group gap="sm">
+            <IconEye size={20} color="white" />
+            <Text fw={700} size="lg" c="white">Dossier N° {selectedDossier?.DossierID}</Text>
+            {selectedDossier && (
+              <Badge color={getEtatColor(selectedDossier.Etat)} variant="filled" size="lg" ml="auto">
+                {selectedDossier.Etat || 'En cours'}
+              </Badge>
+            )}
+          </Group>
+        }
+        size="lg"
+        centered
+        styles={{
+          header: { backgroundColor: '#1b365d', padding: '16px 24px' },
+          title: { color: 'white', fontWeight: 600 },
+          body: { padding: '24px' },
+        }}
+      >
+        {selectedDossier && (
+          <Stack gap="md">
+            {/* Carte Agent + Inconduite */}
+            <Paper p="md" radius="md" withBorder>
+              <Grid>
+                <Grid.Col span={6}>
+                  <Stack gap={4}>
+                    <Text size="xs" c="dimmed" tt="uppercase" fw={600}>Agent concerné</Text>
+                    <Group gap="xs">
+                      <Avatar size="sm" radius="xl" color="blue">
+                        {selectedDossier.AgentNom?.charAt(0)}{selectedDossier.AgentPrenom?.charAt(0)}
+                      </Avatar>
+                      <Box>
+                        <Text size="sm" fw={600}>{selectedDossier.AgentNom} {selectedDossier.AgentPrenom}</Text>
+                        <Text size="xs" c="dimmed">{selectedDossier.AgentMatricule} • {selectedDossier.Grade || 'Sans grade'}</Text>
+                      </Box>
+                    </Group>
+                  </Stack>
+                </Grid.Col>
+                <Grid.Col span={6}>
+                  <Stack gap={4}>
+                    <Text size="xs" c="dimmed" tt="uppercase" fw={600}>Inconduite</Text>
+                    <Badge color={getTypeInconduiteColor(selectedDossier.TypeInconduite)} variant="light" size="md" mb={2}>
+                      {selectedDossier.TypeInconduite || 'Non spécifié'}
+                    </Badge>
+                    <Text size="xs" c="dimmed">
+                      {selectedDossier.PeriodeInconduite || 'Période non précisée'}{selectedDossier.Annee ? ` ${selectedDossier.Annee}` : ''}
+                    </Text>
+                  </Stack>
+                </Grid.Col>
+              </Grid>
+            </Paper>
+
+            {/* Carte Suivi */}
+            <Paper p="md" radius="md" withBorder>
+              <Grid>
+                <Grid.Col span={4}>
+                  <Text size="xs" c="dimmed" tt="uppercase" fw={600}>Service investigation</Text>
+                  <Text size="sm" fw={500}>{selectedDossier.ServiceInvestigation || 'Non renseigné'}</Text>
+                </Grid.Col>
+                <Grid.Col span={4}>
+                  <Text size="xs" c="dimmed" tt="uppercase" fw={600}>Suite réservée</Text>
+                  <Badge color={selectedDossier.SuiteReservee === 'Sanctionné(e)' ? 'red' : selectedDossier.SuiteReservee === 'Acquitté(e)' ? 'green' : 'gray'} variant="light" size="sm">
+                    {selectedDossier.SuiteReservee || 'En attente'}
+                  </Badge>
+                </Grid.Col>
+                <Grid.Col span={4}>
+                  <Text size="xs" c="dimmed" tt="uppercase" fw={600}>Rapport lié</Text>
+                  <Text size="sm" fw={500}>{selectedDossier.IDRapport ? `N° ${selectedDossier.IDRapport}` : 'Aucun'}</Text>
+                </Grid.Col>
+              </Grid>
+            </Paper>
+
+            {/* Carte Sanction (si présente) */}
+            {selectedDossier.Sanction && (
+              <Paper p="md" radius="md" withBorder bg="red.0" style={{ borderLeft: '4px solid #e03131' }}>
+                <Text size="xs" c="dimmed" tt="uppercase" fw={600} mb="sm">⚖️ Sanction appliquée</Text>
+                <Grid>
+                  <Grid.Col span={3}>
+                    <Text size="xs" c="dimmed">Type</Text>
+                    <Text size="sm" fw={500}>{selectedDossier.TypeSanction || '-'}</Text>
+                  </Grid.Col>
+                  <Grid.Col span={3}>
+                    <Text size="xs" c="dimmed">Sanction</Text>
+                    <Badge color="red" variant="filled" size="sm">{selectedDossier.Sanction}</Badge>
+                  </Grid.Col>
+                  <Grid.Col span={3}>
+                    <Text size="xs" c="dimmed">Acte</Text>
+                    <Text size="sm" fw={500}>{selectedDossier.ActeSanction || '-'}</Text>
+                  </Grid.Col>
+                  <Grid.Col span={3}>
+                    <Text size="xs" c="dimmed">N° Acte</Text>
+                    <Text size="sm" fw={500}>{selectedDossier.NumeroActeSanction || '-'}</Text>
+                  </Grid.Col>
+                  <Grid.Col span={12} mt="xs">
+                    <Text size="xs" c="dimmed">Autorité</Text>
+                    <Text size="sm" fw={500}>{selectedDossier.AutoriteSanction || '-'}</Text>
+                  </Grid.Col>
+                </Grid>
+              </Paper>
+            )}
+
+            {/* Carte Observations (si présentes) */}
+            {selectedDossier.Observations && (
+              <Paper p="md" radius="md" withBorder bg="gray.0">
+                <Text size="xs" c="dimmed" tt="uppercase" fw={600} mb={4}>📝 Observations</Text>
+                <Text size="sm">{selectedDossier.Observations}</Text>
+              </Paper>
+            )}
+
+            <Group justify="flex-end" mt="md">
+              <Button variant="light" onClick={() => { setViewModalOpen(false); setSelectedDossier(null); }}>Fermer</Button>
+              <Button
+                variant="gradient"
+                gradient={{ from: '#1b365d', to: '#2a4a7a' }}
+                leftSection={<IconEdit size={16} />}
+                onClick={() => {
+                  const dossier = selectedDossier;
+                  setViewModalOpen(false);
+                  setEditingId(dossier.DossierID);
+                  setCurrentEtat(dossier.Etat || 'En cours');
+                  form.setValues({
+                    PersonnelID: dossier.PersonnelID.toString(),
+                    TypeInconduite: dossier.TypeInconduite || '',
+                    PeriodeInconduite: dossier.PeriodeInconduite || '',
+                    Annee: dossier.Annee || new Date().getFullYear(),
+                    ServiceInvestigation: dossier.ServiceInvestigation || '',
+                    Etat: dossier.Etat || 'En cours',
+                    SuiteReservee: dossier.SuiteReservee || '',
+                    TypeSanction: dossier.TypeSanction || '',
+                    Sanction: dossier.Sanction || '',
+                    ActeSanction: dossier.ActeSanction || '',
+                    NumeroActeSanction: dossier.NumeroActeSanction || '',
+                    AutoriteSanction: dossier.AutoriteSanction || '',
+                    Observations: dossier.Observations || '',
+                    IDRapport: dossier.IDRapport?.toString() || '',
+                  });
+                  setModalOpen(true);
+                }}
+              >
+                Modifier
+              </Button>
+            </Group>
+          </Stack>
+        )}
+      </Modal>
+
+
     </Box>
   );
 }

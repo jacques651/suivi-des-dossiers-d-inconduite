@@ -3,15 +3,15 @@ import {
   Table, Button, Modal, TextInput, Stack, Title, Card,
   Group, ActionIcon, Select, Textarea, Grid, Badge,
   Avatar, Text, Divider, Loader, Pagination, Tooltip,
-  Box, Container, SimpleGrid, Paper, ThemeIcon, 
+  Box, Container, SimpleGrid, Paper, ThemeIcon,
   ScrollArea, Center, Alert, Menu,
   Progress
 } from '@mantine/core';
 import { DateInput } from '@mantine/dates';
 import { useForm } from '@mantine/form';
-import { 
-  IconEdit, IconTrash, IconPlus, IconSearch, 
-  IconFileText, IconCalendar, IconCategory, 
+import {
+  IconEdit, IconTrash, IconPlus, IconSearch,
+  IconFileText, IconCalendar, IconCategory,
   IconRefresh, IconDownload, IconPrinter,
   IconFileExcel, IconFile, IconFileWord,
   IconInfoCircle, IconCheck, IconX
@@ -24,6 +24,7 @@ import dayjs from 'dayjs';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { usePrint } from '../hooks/usePrint';
 
 interface Rapport {
   RapportID: number;
@@ -49,7 +50,7 @@ export default function Rapports() {
   const [exporting, setExporting] = useState(false);
   const [infoModalOpen, setInfoModalOpen] = useState(false);
   const itemsPerPage = 10;
-
+  const { printDocument } = usePrint();
   const form = useForm({
     initialValues: {
       LibelleRapport: '',
@@ -102,7 +103,7 @@ export default function Rapports() {
         await invoke('create_rapport', { rapport: rapportData });
         notifications.show({ title: 'Succès', message: 'Rapport créé', color: 'green', icon: <IconCheck size={16} /> });
       }
-      
+
       setModalOpen(false);
       form.reset();
       setEditingId(null);
@@ -131,11 +132,9 @@ export default function Rapports() {
   };
 
   const getTypeColor = (type?: string) => {
-    switch(type) {
-      case 'Audit': return 'blue';
-      case 'Contrôle': return 'green';
+    switch (type) {
+      case 'Contrôle/Audit': return 'green';
       case 'Investigation': return 'orange';
-      case 'Inspection': return 'violet';
       default: return 'gray';
     }
   };
@@ -269,50 +268,36 @@ export default function Rapports() {
   };
 
   // Impression
-  const handlePrint = () => {
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) {
-      notifications.show({ title: 'Erreur', message: 'Veuillez autoriser les popups', color: 'red', icon: <IconX size={16} /> });
-      return;
-    }
+ const handlePrint = (orientation: 'portrait' | 'landscape') => {
+  const rows = filteredRapports.map((rapport, idx) => `
+    <tr>
+      <td>${idx + 1}</td>
+      <td>${rapport.NumeroRapport}</td>
+      <td>${rapport.LibelleRapport}</td>
+      <td>${dayjs(rapport.DateRapport).format('DD/MM/YYYY')}</td>
+      <td>${rapport.TypeInspection || '-'}</td>
+      <td>${rapport.PeriodeSousRevue || '-'}</td>
+    </tr>
+  `).join('');
 
-    const rows = filteredRapports.map((rapport, idx) => `
-      <tr>
-        <td style="border:1px solid #ddd;padding:8px;text-align:center">${idx + 1}</td>
-        <td style="border:1px solid #ddd;padding:8px">${rapport.NumeroRapport}</td>
-        <td style="border:1px solid #ddd;padding:8px"><strong>${rapport.LibelleRapport}</strong></td>
-        <td style="border:1px solid #ddd;padding:8px">${dayjs(rapport.DateRapport).format('DD/MM/YYYY')}</td>
-        <td style="border:1px solid #ddd;padding:8px">${rapport.TypeInspection || '-'}</td>
-        <td style="border:1px solid #ddd;padding:8px">${rapport.PeriodeSousRevue || '-'}</td>
-      </tr>
-    `).join('');
+  const content = `
+    <table>
+      <thead>
+        <tr>
+          <th>N°</th>
+          <th>Numéro</th>
+          <th>Libellé</th>
+          <th>Date</th>
+          <th>Type</th>
+          <th>Période</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
 
-    printWindow.document.write(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="UTF-8"><title>Liste des rapports</title>
-      <style>
-        body { font-family: 'Segoe UI', Arial, sans-serif; padding: 20px; }
-        h1 { color: #1b365d; border-bottom: 3px solid #1b365d; padding-bottom: 10px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-        th { background: #1b365d; color: white; padding: 10px; border: 1px solid #2a4a7a; }
-        td { padding: 8px; border: 1px solid #ddd; }
-        tr:nth-child(even) { background: #f9f9f9; }
-        @media print { body { padding: 0; margin: 0; } }
-      </style>
-      </head>
-      <body>
-        <h1>📋 LISTE DES RAPPORTS D'INSPECTION</h1>
-        <p>Généré le ${dayjs().format('DD/MM/YYYY HH:mm')}</p>
-        <p>Total rapports : ${filteredRapports.length}</p>
-        <table><thead><tr><th>N°</th><th>Numéro</th><th>Libellé</th><th>Date</th><th>Type</th><th>Période</th></tr></thead><tbody>${rows}</tbody><td>
-        <script>window.onload = () => { window.print(); window.close(); };</script>
-      </body>
-      </html>
-    `);
-    printWindow.document.close();
-  };
-
+  printDocument(content, 'LISTE DES RAPPORTS', orientation);
+};
   // Filtrage des rapports
   const filteredRapports = rapports.filter(rapport =>
     rapport.NumeroRapport.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -328,7 +313,7 @@ export default function Rapports() {
   const totalRapports = rapports.length;
   const typeCount = [...new Set(rapports.map(r => r.TypeInspection).filter(Boolean))].length;
 
-  const typeOptions = ['Audit', 'Contrôle', 'Investigation', 'Inspection'];
+  const typeOptions = ['Contrôle/Audit','Investigation'];
 
   if (loading) {
     return (
@@ -437,11 +422,24 @@ export default function Rapports() {
                     <Menu.Item leftSection={<IconFileWord size={16} color="#2980b9" />} onClick={exportToWord}>Word (.doc)</Menu.Item>
                   </Menu.Dropdown>
                 </Menu>
-                <Tooltip label="Imprimer">
-                  <ActionIcon onClick={handlePrint} size="lg" variant="light" color="teal">
-                    <IconPrinter size={18} />
-                  </ActionIcon>
-                </Tooltip>
+                <Menu>
+                  <Menu.Target>
+                    <Tooltip label="Imprimer">
+                      <ActionIcon size="lg" variant="light" color="teal">
+                        <IconPrinter size={18} />
+                      </ActionIcon>
+                    </Tooltip>
+                  </Menu.Target>
+
+                  <Menu.Dropdown>
+                    <Menu.Item onClick={() => handlePrint('portrait')}>
+                      Portrait
+                    </Menu.Item>
+                    <Menu.Item onClick={() => handlePrint('landscape')}>
+                      Paysage
+                    </Menu.Item>
+                  </Menu.Dropdown>
+                </Menu>
                 <Button leftSection={<IconPlus size={16} />} onClick={() => { setEditingId(null); form.reset(); setModalOpen(true); }} variant="gradient" gradient={{ from: '#1b365d', to: '#2a4a7a' }}>
                   Nouveau Rapport
                 </Button>
@@ -577,18 +575,18 @@ export default function Rapports() {
       >
         <form onSubmit={form.onSubmit(handleSubmit)}>
           <Stack gap="md">
-            <TextInput 
-              label="Libellé du rapport" 
-              placeholder="Ex: Rapport d'inspection annuelle" 
-              {...form.getInputProps('LibelleRapport')} 
-              required 
+            <TextInput
+              label="Libellé du rapport"
+              placeholder="Ex: Rapport d'inspection annuelle"
+              {...form.getInputProps('LibelleRapport')}
+              required
               size="md"
             />
-            <TextInput 
-              label="Numéro du rapport" 
-              placeholder="Ex: 2025-001/ITS" 
-              {...form.getInputProps('NumeroRapport')} 
-              required 
+            <TextInput
+              label="Numéro du rapport"
+              placeholder="Ex: 2025-001/ITS"
+              {...form.getInputProps('NumeroRapport')}
+              required
               size="md"
             />
             <DateInput
@@ -645,9 +643,9 @@ export default function Rapports() {
                 </Badge>
               </Group>
             </Card>
-            
+
             <Divider />
-            
+
             <Grid>
               <Grid.Col span={12}>
                 <Text size="xs" c="dimmed">Libellé</Text>

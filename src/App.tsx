@@ -2,6 +2,8 @@ import React from 'react';
 import { MantineProvider, AppShell, Box, Text, Burger, Group, rem } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { theme } from './theme';
+import SuiviRecommandationsManager from './pages/SuiviRecommandationsManager';
+
 import { 
   IconDashboard, 
   IconReport, 
@@ -10,10 +12,11 @@ import {
   IconListCheck,
   IconSettings,
   IconLogout,
-  IconDatabase
+  IconDatabase,
+  IconChecklist,
 } from '@tabler/icons-react';
 import Dashboard from './pages/Dashboard';
-import Agents from './pages/Agents';
+import AgentManager from './pages/AgentManager';
 import Rapports from './pages/Rapports';
 import Dossiers from './pages/Dossiers';
 import Recommandations from './pages/Recommandations';
@@ -34,18 +37,20 @@ function App() {
     { id: 'rapports', label: 'Rapports d\'Inspection', icon: IconReport },
     { id: 'dossiers', label: 'Dossiers Disciplinaires', icon: IconFileText },
     { id: 'recommandations', label: 'Recommandations', icon: IconListCheck },
+    { id: 'suiviRecommandations', label: 'Suivi Recommandations', icon: IconChecklist },
     { id: 'referentiels', label: 'Référentiels', icon: IconDatabase },
   ];
 
   const renderContent = () => {
     switch(activeTab) {
       case 'dashboard': return <Dashboard onNavigate={(page) => setActiveTab(page)} />;
-      case 'agents': return <Agents />;
+      case 'agents': return <AgentManager />;
       case 'rapports': return <Rapports />;
       case 'dossiers': return <Dossiers />;
       case 'recommandations': return <Recommandations />;
+      case 'suiviRecommandations': return <SuiviRecommandationsManager />;
       case 'referentiels': return <Referentiels />;
-      default: return <Dashboard />;
+      default: return <Dashboard onNavigate={(page) => setActiveTab(page)} />;
     }
   };
 
@@ -75,7 +80,7 @@ function App() {
               visibleFrom="sm"
               size="sm"
             />
-            <Text size="xl" fw={700} c="white">Suivi des Dossiers d'Inconduite</Text>
+            <Text size="xl" fw={700} c="white">Suivi Dossiers</Text>
             <Text size="sm" c="gray.3" ml="md" visibleFrom="sm">Suivi des Inspections et Dossiers Disciplinaires</Text>
           </Group>
         </AppShell.Header>

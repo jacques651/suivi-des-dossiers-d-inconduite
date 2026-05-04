@@ -4,26 +4,27 @@ import {
   Group, ActionIcon, Select, Textarea, Grid, Badge,
   Avatar, Text, Divider, Loader, Pagination, Tooltip,
   Box, Container, SimpleGrid, Paper, ThemeIcon,
-  ScrollArea, Center, Alert, Menu, Progress
+  ScrollArea, Center, Alert, Menu, Progress,
+  Autocomplete
 } from '@mantine/core';
 import { DateInput } from '@mantine/dates';
 import { useForm } from '@mantine/form';
-import { 
-  IconEdit, 
-  IconPlus, 
-  IconCheck, 
-  IconSearch, 
-  IconListCheck, 
-  IconUser, 
-  IconRefresh, 
-  IconDownload, 
+import {
+  IconEdit,
+  IconPlus,
+  IconCheck,
+  IconSearch,
+  IconListCheck,
+  IconUser,
+  IconRefresh,
+  IconDownload,
   IconPrinter,
-  IconFileExcel, 
-  IconFile, 
+  IconFileExcel,
+  IconFile,
   IconFileWord,
-  IconInfoCircle, 
-  IconX, 
-  IconClock, 
+  IconInfoCircle,
+  IconX,
+  IconClock,
   IconAlertCircle,
   IconTrash
 } from '@tabler/icons-react';
@@ -35,6 +36,7 @@ import dayjs from 'dayjs';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { usePrint } from '../hooks/usePrint';
 
 interface Recommandation {
   RecommandationID: number;
@@ -82,8 +84,8 @@ export default function Recommandations() {
   const [activePage, setActivePage] = useState(1);
   const [exporting, setExporting] = useState(false);
   const [infoModalOpen, setInfoModalOpen] = useState(false);
-  const itemsPerPage = 10;
-
+  const [itemsPerPage, setItemsPerPage] = useState(10);
+  const { printDocument } = usePrint();
   const form = useForm({
     initialValues: {
       Services: '',
@@ -95,7 +97,7 @@ export default function Recommandations() {
       ResponsableMiseEnOeuvre: '',
       ActeursImpliques: '',
       InstanceValidation: '',
-      Echeance: null as Date | null,
+      Echeance: '',
       Domaine: '',
     },
     validate: {
@@ -120,15 +122,17 @@ export default function Recommandations() {
   useEffect(() => {
     loadRecommandations();
     loadRapports();
+    loadExistingDomaines();
   }, []);
 
   const loadRecommandations = async () => {
     setLoading(true);
     try {
       const result = await invoke('get_recommandations');
+      console.log('DONNÉES BRUTES:', JSON.stringify(result, null, 2)); // ← Ajoute cette ligne
       setRecommandations(result as Recommandation[]);
     } catch (error) {
-      notifications.show({ title: 'Erreur', message: 'Impossible de charger les recommandations', color: 'red', icon: <IconX size={16} /> });
+      notifications.show({ title: 'Erreur', message: 'Impossible de charger les recommandations', color: 'red' });
     } finally {
       setLoading(false);
     }
@@ -148,7 +152,7 @@ export default function Recommandations() {
       const recommandationData = {
         ...values,
         RapportID: parseInt(values.RapportID),
-        Echeance: values.Echeance ? dayjs(values.Echeance).format('YYYY-MM-DD') : null,
+        Echeance: values.Echeance || null,
         RecommandationID: editingId,
       };
 
@@ -159,7 +163,7 @@ export default function Recommandations() {
         await invoke('create_recommandation', { recommandation: recommandationData });
         notifications.show({ title: 'Succès', message: 'Recommandation créée', color: 'green', icon: <IconCheck size={16} /> });
       }
-      
+
       setModalOpen(false);
       form.reset();
       setEditingId(null);
@@ -171,7 +175,7 @@ export default function Recommandations() {
 
   const handleUpdateSuivi = async () => {
     if (!selectedRecommandation) return;
-    
+
     try {
       const suiviData = {
         ...suiviForm.values,
@@ -223,7 +227,7 @@ export default function Recommandations() {
   };
 
   const getNiveauColor = (niveau?: string) => {
-    switch(niveau) {
+    switch (niveau) {
       case 'Réalisée': return 'green';
       case 'En cours': return 'blue';
       case 'Partiellement réalisée': return 'yellow';
@@ -235,11 +239,12 @@ export default function Recommandations() {
 
   const getEcheanceStatus = (echeance?: string) => {
     if (!echeance) return null;
-    const today = dayjs();
-    const echeanceDate = dayjs(echeance);
-    if (echeanceDate.isBefore(today)) return <Badge color="red" size="sm">Dépassée</Badge>;
-    if (echeanceDate.diff(today, 'day') <= 7) return <Badge color="orange" size="sm">Proche échéance</Badge>;
-    return <Badge color="green" size="sm">Dans les délais</Badge>;
+    switch (echeance) {
+      case 'Court terme': return <Badge color="red" size="sm">Urgent</Badge>;
+      case 'Moyen terme': return <Badge color="orange" size="sm">Intermédiaire</Badge>;
+      case 'Long terme': return <Badge color="green" size="sm">Planifié</Badge>;
+      default: return null;
+    }
   };
 
   const getTauxRealisation = () => {
@@ -266,7 +271,7 @@ export default function Recommandations() {
         'Texte': rec.TexteRecommandation,
         'Rapport': rec.NumeroRapport,
         'Responsable': rec.ResponsableMiseEnOeuvre || '',
-        'Échéance': rec.Echeance ? dayjs(rec.Echeance).format('DD/MM/YYYY') : '',
+        'Échéance': rec.Echeance || '',
         'Statut': rec.NiveauMiseEnOeuvre || 'Non commencé',
         'Domaine': rec.Domaine || '',
       }));
@@ -314,7 +319,7 @@ export default function Recommandations() {
         rec.TexteRecommandation.substring(0, 80),
         rec.NumeroRapport || '',
         rec.ResponsableMiseEnOeuvre || '',
-        rec.Echeance ? dayjs(rec.Echeance).format('DD/MM/YYYY') : '',
+        rec.Echeance || '',
         rec.NiveauMiseEnOeuvre || 'Non commencé'
       ]);
 
@@ -354,7 +359,11 @@ export default function Recommandations() {
           <td style="border:1px solid #ddd;padding:8px">${rec.TexteRecommandation.substring(0, 100)}...</td>
           <td style="border:1px solid #ddd;padding:8px">${rec.NumeroRapport || '-'}</td>
           <td style="border:1px solid #ddd;padding:8px">${rec.ResponsableMiseEnOeuvre || '-'}</td>
-          <td style="border:1px solid #ddd;padding:8px">${rec.Echeance ? dayjs(rec.Echeance).format('DD/MM/YYYY') : '-'}</td>
+          <td style="border:1px solid #ddd;padding:8px">
+  <span class="badge" style="background:${rec.Echeance === 'Court terme' ? '#e03131' : rec.Echeance === 'Moyen terme' ? '#f08c00' : rec.Echeance === 'Long terme' ? '#2f9e44' : '#868e96'};color:white;padding:4px 8px;border-radius:12px;font-size:11px">
+    ${rec.Echeance || '-'}
+  </span>
+</td>
           <td style="border:1px solid #ddd;padding:8px">${rec.NiveauMiseEnOeuvre || 'Non commencé'}</td>
         </tr>
       `).join('');
@@ -389,50 +398,38 @@ export default function Recommandations() {
   };
 
   // Impression
-  const handlePrint = () => {
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) {
-      notifications.show({ title: 'Erreur', message: 'Veuillez autoriser les popups', color: 'red', icon: <IconX size={16} /> });
-      return;
-    }
+  const handlePrint = (orientation: 'portrait' | 'landscape') => {
 
     const rows = filteredRecommandations.map((rec, idx) => `
-      <tr>
-        <td style="border:1px solid #ddd;padding:8px;text-align:center">${idx + 1}</td>
-        <td style="border:1px solid #ddd;padding:8px">${rec.NumeroRecommandation || rec.RecommandationID}</td>
-        <td style="border:1px solid #ddd;padding:8px">${rec.TexteRecommandation.substring(0, 80)}...</td>
-        <td style="border:1px solid #ddd;padding:8px">${rec.NumeroRapport || '-'}</td>
-        <td style="border:1px solid #ddd;padding:8px">${rec.ResponsableMiseEnOeuvre || '-'}</td>
-        <td style="border:1px solid #ddd;padding:8px">${rec.Echeance ? dayjs(rec.Echeance).format('DD/MM/YYYY') : '-'}</td>
-        <td style="border:1px solid #ddd;padding:8px">${rec.NiveauMiseEnOeuvre || 'Non commencé'}</td>
-      </tr>
-    `).join('');
+    <tr>
+      <td>${idx + 1}</td>
+      <td>${rec.NumeroRecommandation || rec.RecommandationID}</td>
+      <td>${rec.TexteRecommandation.substring(0, 80)}...</td>
+      <td>${rec.NumeroRapport || '-'}</td>
+      <td>${rec.ResponsableMiseEnOeuvre || '-'}</td>
+      <td>${rec.Echeance || '-'}</td>
+      <td>${rec.NiveauMiseEnOeuvre || 'Non commencé'}</td>
+    </tr>
+  `).join('');
 
-    printWindow.document.write(`
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="UTF-8"><title>Liste des recommandations</title>
-      <style>
-        body { font-family: 'Segoe UI', Arial, sans-serif; padding: 20px; }
-        h1 { color: #1b365d; border-bottom: 3px solid #1b365d; padding-bottom: 10px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-        th { background: #1b365d; color: white; padding: 10px; border: 1px solid #2a4a7a; }
-        td { padding: 8px; border: 1px solid #ddd; }
-        tr:nth-child(even) { background: #f9f9f9; }
-        @media print { body { padding: 0; margin: 0; } }
-      </style>
-      </head>
-      <body>
-        <h1>📋 LISTE DES RECOMMANDATIONS</h1>
-        <p>Généré le ${dayjs().format('DD/MM/YYYY HH:mm')}</p>
-        <p>Total recommandations : ${filteredRecommandations.length}</p>
-        <p>Taux de réalisation : ${getTauxRealisation().toFixed(1)}%</p>
-        <table><thead><tr><th>N°</th><th>Numéro</th><th>Recommandation</th><th>Rapport</th><th>Responsable</th><th>Échéance</th><th>Statut</th></tr></thead><tbody>${rows}</tbody></table>
-        <script>window.onload = () => { window.print(); window.close(); };</script>
-      </body>
-      </html>
-    `);
-    printWindow.document.close();
+    const content = `
+    <table style="width:100%; border-collapse: collapse;">
+      <thead>
+        <tr style="background:#1b365d;color:white;">
+          <th>N°</th>
+          <th>Numéro</th>
+          <th>Recommandation</th>
+          <th>Rapport</th>
+          <th>Responsable</th>
+          <th>Échéance</th>
+          <th>Statut</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+
+    printDocument(content, 'LISTE DES RECOMMANDATIONS', orientation);
   };
 
   // Filtrage des recommandations
@@ -442,6 +439,25 @@ export default function Recommandations() {
     const matchesStatut = !filterStatut || rec.NiveauMiseEnOeuvre === filterStatut;
     return matchesSearch && matchesStatut;
   });
+
+  // Pour les domaines dynamiques (auto-complétion)
+  const [domaineOptions, setDomaineOptions] = useState<string[]>([]);
+
+  // Au chargement, récupérer les domaines existants depuis la base
+  useEffect(() => {
+    loadDomainesExistants();
+  }, []);
+
+  const loadDomainesExistants = async () => {
+    try {
+      const domaines = await invoke<string[]>('get_distinct_domaines');
+      if (domaines && domaines.length > 0) {
+        setDomaineOptions(prev => [...new Set([...prev, ...domaines])]);
+      }
+    } catch (error) {
+      console.error('Erreur chargement domaines:', error);
+    }
+  };
 
   const totalPages = Math.ceil(filteredRecommandations.length / itemsPerPage);
   const paginatedRecommandations = filteredRecommandations.slice(
@@ -454,6 +470,23 @@ export default function Recommandations() {
   const enCours = recommandations.filter(r => r.NiveauMiseEnOeuvre === 'En cours').length;
   const nonRealisees = recommandations.filter(r => r.NiveauMiseEnOeuvre === 'Non commencé' || r.NiveauMiseEnOeuvre === 'Abandonnée').length;
   const tauxRealisation = getTauxRealisation();
+
+  // Fonction pour charger les domaines distincts depuis la base
+  const loadExistingDomaines = async () => {
+    try {
+      const domaines = await invoke<string[]>('get_distinct_domaines');
+      if (domaines && domaines.length > 0) {
+        setDomaineOptions(domaines);
+      } else {
+        // Valeurs par défaut si aucun domaine n'existe
+        setDomaineOptions([]);
+      }
+    } catch (error) {
+      console.error('Erreur chargement domaines:', error);
+      // Valeurs par défaut en cas d'erreur
+      setDomaineOptions([]);
+    }
+  };
 
   const rapportOptions = rapports.map(rapport => ({
     value: rapport.RapportID.toString(),
@@ -571,11 +604,25 @@ export default function Recommandations() {
                     <Menu.Item leftSection={<IconFileWord size={16} color="#2980b9" />} onClick={exportToWord}>Word (.doc)</Menu.Item>
                   </Menu.Dropdown>
                 </Menu>
-                <Tooltip label="Imprimer">
-                  <ActionIcon onClick={handlePrint} size="lg" variant="light" color="teal">
-                    <IconPrinter size={18} />
-                  </ActionIcon>
-                </Tooltip>
+                <Menu shadow="md" width={160}>
+                  <Menu.Target>
+                    <Tooltip label="Imprimer">
+                      <ActionIcon size="lg" variant="light" color="teal">
+                        <IconPrinter size={18} />
+                      </ActionIcon>
+                    </Tooltip>
+                  </Menu.Target>
+
+                  <Menu.Dropdown>
+                    <Menu.Item onClick={() => handlePrint('portrait')}>
+                      🧾 Portrait
+                    </Menu.Item>
+
+                    <Menu.Item onClick={() => handlePrint('landscape')}>
+                      📄 Paysage
+                    </Menu.Item>
+                  </Menu.Dropdown>
+                </Menu>
                 <Button leftSection={<IconPlus size={16} />} onClick={() => { setEditingId(null); form.reset(); setModalOpen(true); }} variant="gradient" gradient={{ from: '#1b365d', to: '#2a4a7a' }}>
                   Nouvelle Recommandation
                 </Button>
@@ -608,96 +655,294 @@ export default function Recommandations() {
             </Grid>
           </Card>
 
-          {/* Tableau */}
-          <Card withBorder radius="lg" shadow="sm" p="0">
-            <ScrollArea style={{ maxHeight: 500 }}>
-              <Table striped highlightOnHover>
+          <Card withBorder radius="lg" shadow="sm" p="md">
+            <ScrollArea h={500}>
+
+              <Table
+                striped
+                highlightOnHover
+                verticalSpacing="md"
+                horizontalSpacing="md"
+                withColumnBorders
+              >
+
+                {/* HEADER */}
                 <Table.Thead style={{ backgroundColor: '#1b365d' }}>
                   <Table.Tr>
-                    <Table.Th style={{ color: 'white', width: 120 }}>N°</Table.Th>
-                    <Table.Th style={{ color: 'white' }}>Recommandation</Table.Th>
-                    <Table.Th style={{ color: 'white', width: 150 }}>Rapport</Table.Th>
-                    <Table.Th style={{ color: 'white', width: 150 }}>Responsable</Table.Th>
-                    <Table.Th style={{ color: 'white', width: 100 }}>Échéance</Table.Th>
-                    <Table.Th style={{ color: 'white', width: 120 }}>Statut</Table.Th>
-                    <Table.Th style={{ color: 'white', width: 120, textAlign: 'center' }}>Actions</Table.Th>
+                    <Table.Th w={80} ta="center" c="white">N°</Table.Th>
+                    <Table.Th c="white">Recommandation</Table.Th>
+                    <Table.Th w={200} c="white">Rapport</Table.Th>
+                    <Table.Th w={180} c="white">Responsable</Table.Th>
+                    <Table.Th w={140} c="white" ta="center">Échéance</Table.Th>
+                    <Table.Th w={150} c="white" ta="center">Statut</Table.Th>
+                    <Table.Th w={120} c="white" ta="center">Actions</Table.Th>
                   </Table.Tr>
                 </Table.Thead>
+
+                {/* BODY */}
                 <Table.Tbody>
+
                   {paginatedRecommandations.length === 0 ? (
                     <Table.Tr>
                       <Table.Td colSpan={7}>
                         <Center py="xl">
-                          <Stack align="center">
-                            <IconListCheck size={48} color="gray" />
-                            <Text c="dimmed">Aucune recommandation trouvée</Text>
+                          <Stack align="center" gap="xs">
+                            <IconListCheck size={48} color="gray" opacity={0.5} />
+                            <Text c="dimmed" size="sm">
+                              Aucune recommandation trouvée
+                            </Text>
+                            <Button
+                              variant="subtle"
+                              size="xs"
+                              onClick={() => {
+                                setSearchTerm('');
+                                setFilterStatut(null);
+                              }}
+                            >
+                              Réinitialiser les filtres
+                            </Button>
                           </Stack>
                         </Center>
                       </Table.Td>
                     </Table.Tr>
                   ) : (
+
                     paginatedRecommandations.map((rec) => (
                       <Table.Tr key={rec.RecommandationID}>
-                        <Table.Td>
-                          <Badge variant="light" color="blue" size="lg">
+
+                        {/* NUMERO */}
+                        <Table.Td ta="center">
+                          <Badge variant="light" color="blue">
                             {rec.NumeroRecommandation || rec.RecommandationID}
                           </Badge>
                         </Table.Td>
-                        <Table.Td>
-                          <Text fw={500} size="sm" lineClamp={2}>{rec.TexteRecommandation}</Text>
-                          {rec.ProblemeFaiblesse && (
-                            <Text size="xs" c="dimmed" mt={4}>Pb: {rec.ProblemeFaiblesse.substring(0, 50)}</Text>
-                          )}
-                        </Table.Td>
-                        <Table.Td>
-                          <Text size="sm" fw={500}>{rec.NumeroRapport}</Text>
-                          <Text size="xs" c="dimmed" lineClamp={1}>{rec.LibelleRapport}</Text>
-                        </Table.Td>
-                        <Table.Td>
-                          <Group gap="xs" wrap="nowrap">
-                            <IconUser size={14} color="gray" />
-                            <Text size="sm">{rec.ResponsableMiseEnOeuvre || '-'}</Text>
-                          </Group>
-                        </Table.Td>
+
+                        {/* RECOMMANDATION */}
                         <Table.Td>
                           <Stack gap={4}>
-                            {rec.Echeance && (
-                              <Text size="sm">{dayjs(rec.Echeance).format('DD/MM/YYYY')}</Text>
+                            <Text fw={500} size="sm" lineClamp={2}>
+                              {rec.TexteRecommandation}
+                            </Text>
+
+                            {rec.ProblemeFaiblesse && (
+                              <Text size="xs" c="dimmed" lineClamp={1}>
+                                {rec.ProblemeFaiblesse}
+                              </Text>
                             )}
+                          </Stack>
+                        </Table.Td>
+
+                        {/* RAPPORT */}
+                        <Table.Td>
+                          <Stack gap={2}>
+                            <Text fw={500} size="sm">
+                              {rec.NumeroRapport || '-'}
+                            </Text>
+                            <Text size="xs" c="dimmed" lineClamp={1}>
+                              {rec.LibelleRapport || '-'}
+                            </Text>
+                          </Stack>
+                        </Table.Td>
+
+                        {/* RESPONSABLE */}
+                        <Table.Td>
+                          <Group gap={6} wrap="nowrap">
+                            <IconUser size={14} color="gray" />
+                            <Text size="sm" lineClamp={1}>
+                              {rec.ResponsableMiseEnOeuvre || '-'}
+                            </Text>
+                          </Group>
+                        </Table.Td>
+
+                        {/* ECHEANCE */}
+                        <Table.Td ta="center">
+                          <Stack gap={2} align="center">
+                            <Text size="sm">
+                              {rec.Echeance || '-'}
+                            </Text>
                             {getEcheanceStatus(rec.Echeance)}
                           </Stack>
                         </Table.Td>
-                        <Table.Td>
-                          <Badge color={getNiveauColor(rec.NiveauMiseEnOeuvre)} variant="light" size="md">
+
+                        {/* STATUT */}
+                        <Table.Td ta="center">
+                          <Badge
+                            color={getNiveauColor(rec.NiveauMiseEnOeuvre)}
+                            variant="light"
+                          >
                             {rec.NiveauMiseEnOeuvre || 'Non commencé'}
                           </Badge>
                         </Table.Td>
-                        <Table.Td ta="center">
-                          <Group gap="xs" justify="center" wrap="nowrap">
-                            <Tooltip label="Voir détails" withArrow>
-                              <ActionIcon onClick={() => handleView(rec)} color="green" variant="light" size="sm">
+
+                        {/* ACTIONS */}
+                        <Table.Td>
+                          <Group justify="center" gap={6} wrap="nowrap">
+
+                            <Tooltip label="Voir détails">
+                              <ActionIcon
+                                onClick={() => handleView(rec)}
+                                color="green"
+                                variant="light"
+                              >
                                 <IconListCheck size={16} />
                               </ActionIcon>
                             </Tooltip>
-                            <Tooltip label="Suivi" withArrow>
-                              <ActionIcon onClick={() => openSuiviModal(rec)} color="blue" variant="light" size="sm">
+
+                            <Tooltip label="Modifier" withArrow>
+                              <ActionIcon
+                                onClick={() => {
+                                  setEditingId(rec.RecommandationID);
+                                  form.setValues({
+                                    Services: rec.Services || '',
+                                    Source: rec.Source || '',
+                                    RapportID: rec.RapportID?.toString() || '',
+                                    ProblemeFaiblesse: rec.ProblemeFaiblesse || '',
+                                    NumeroRecommandation: rec.NumeroRecommandation || '',
+                                    TexteRecommandation: rec.TexteRecommandation || '',
+                                    ResponsableMiseEnOeuvre: rec.ResponsableMiseEnOeuvre || '',
+                                    ActeursImpliques: rec.ActeursImpliques || '',
+                                    InstanceValidation: rec.InstanceValidation || '',
+                                    Echeance: rec.Echeance || '',
+                                    Domaine: rec.Domaine || '',
+                                  });
+                                  setModalOpen(true);
+                                }}
+                                color="orange"
+                                variant="light"
+                                size="sm"
+                              >
                                 <IconEdit size={16} />
                               </ActionIcon>
                             </Tooltip>
-                            <Tooltip label="Supprimer" withArrow>
-                              <ActionIcon onClick={() => { setRecommandationToDelete(rec.RecommandationID); setDeleteModalOpen(true); }} color="red" variant="light" size="sm">
+
+                            <Tooltip label="Suivi">
+                              <ActionIcon
+                                onClick={() => openSuiviModal(rec)}
+                                color="blue"
+                                variant="light"
+                              >
+                                <IconEdit size={16} />
+                              </ActionIcon>
+                            </Tooltip>
+
+                            <Tooltip label="Supprimer">
+                              <ActionIcon
+                                onClick={() => {
+                                  setRecommandationToDelete(rec.RecommandationID);
+                                  setDeleteModalOpen(true);
+                                }}
+                                color="red"
+                                variant="light"
+                              >
                                 <IconTrash size={16} />
                               </ActionIcon>
                             </Tooltip>
+
                           </Group>
                         </Table.Td>
+
                       </Table.Tr>
                     ))
+
                   )}
+
                 </Table.Tbody>
               </Table>
+
             </ScrollArea>
           </Card>
+
+          {/* Pagination améliorée */}
+          {totalPages > 1 && (
+            <Card withBorder radius="lg" shadow="sm" p="md" mt="md" style={{ backgroundColor: '#f8f9fa' }}>
+              <Group justify="space-between" align="center" wrap="wrap" gap="md">
+                <Text size="sm" c="dimmed">
+                  Affichage de {(activePage - 1) * itemsPerPage + 1} à {Math.min(activePage * itemsPerPage, filteredRecommandations.length)} sur {filteredRecommandations.length} recommandation(s)
+                </Text>
+
+                <Group gap="xs">
+                  <Tooltip label="Première page" withArrow>
+                    <ActionIcon
+                      variant="default"
+                      onClick={() => setActivePage(1)}
+                      disabled={activePage === 1}
+                      size="md"
+                    >
+                      «
+                    </ActionIcon>
+                  </Tooltip>
+
+                  <Tooltip label="Page précédente" withArrow>
+                    <ActionIcon
+                      variant="default"
+                      onClick={() => setActivePage(prev => Math.max(1, prev - 1))}
+                      disabled={activePage === 1}
+                      size="md"
+                    >
+                      ‹
+                    </ActionIcon>
+                  </Tooltip>
+
+                  <Select
+                    value={activePage.toString()}
+                    onChange={(val) => setActivePage(parseInt(val || '1'))}
+                    data={Array.from({ length: Math.min(totalPages, 50) }, (_, i) => ({
+                      value: (i + 1).toString(),
+                      label: `Page ${i + 1}`
+                    }))}
+                    style={{ width: 100 }}
+                    size="sm"
+                  />
+
+                  <Tooltip label="Page suivante" withArrow>
+                    <ActionIcon
+                      variant="default"
+                      onClick={() => setActivePage(prev => Math.min(totalPages, prev + 1))}
+                      disabled={activePage === totalPages}
+                      size="md"
+                    >
+                      ›
+                    </ActionIcon>
+                  </Tooltip>
+
+                  <Tooltip label="Dernière page" withArrow>
+                    <ActionIcon
+                      variant="default"
+                      onClick={() => setActivePage(totalPages)}
+                      disabled={activePage === totalPages}
+                      size="md"
+                    >
+                      »
+                    </ActionIcon>
+                  </Tooltip>
+                </Group>
+
+                <Select
+                  label="Lignes par page"
+                  value={itemsPerPage.toString()}
+                  onChange={(val: string | null) => {
+                    const newValue = val ? parseInt(val) : 10;
+                    setItemsPerPage(newValue);
+                    setActivePage(1);
+                  }}
+                  data={[
+                    { value: '10', label: '10 lignes' },
+                    { value: '25', label: '25 lignes' },
+                    { value: '50', label: '50 lignes' },
+                    { value: '100', label: '100 lignes' }
+                  ]}
+                  size="sm"
+                  style={{ width: 130 }}
+                />
+              </Group>
+            </Card>
+          )}
+          {/* Indicateur de chargement pendant le changement de page */}
+          {loading && (
+            <Center mt="md">
+              <Loader size="sm" color="#1b365d" />
+            </Center>
+          )}
 
           {totalPages > 1 && (
             <Group justify="center" mt="md">
@@ -707,7 +952,6 @@ export default function Recommandations() {
         </Stack>
       </Container>
 
-      {/* Modals - le reste des modals reste identique */}
       {/* Modal Formulaire */}
       <Modal
         opened={modalOpen}
@@ -723,7 +967,6 @@ export default function Recommandations() {
         overlayProps={{ blur: 3 }}
         transitionProps={{ transition: 'fade', duration: 200 }}
       >
-        {/* Contenu du formulaire - inchangé */}
         <form onSubmit={form.onSubmit(handleSubmit)}>
           <Stack gap="md">
             <Select
@@ -745,9 +988,11 @@ export default function Recommandations() {
                 />
               </Grid.Col>
               <Grid.Col span={6}>
-                <Select
+                {/* Utilisation de Autocomplete au lieu de Select */}
+                <Autocomplete
                   label="Domaine"
-                  data={['Administratif', 'Financier', 'Technique', 'RH', 'Sécurité', 'Autre']}
+                  placeholder="Sélectionner ou saisir un domaine"
+                  data={domaineOptions}
                   {...form.getInputProps('Domaine')}
                   size="md"
                 />
@@ -779,9 +1024,15 @@ export default function Recommandations() {
                 />
               </Grid.Col>
               <Grid.Col span={6}>
-                <DateInput
-                  label="Date d'échéance"
-                  placeholder="Sélectionner une date"
+                {/* Échéance : Select avec Court/Moyen/Long terme */}
+                <Select
+                  label="Échéance"
+                  placeholder="Sélectionner le délai"
+                  data={[
+                    { value: 'Court terme', label: 'Court terme (≤ 3 mois)' },
+                    { value: 'Moyen terme', label: 'Moyen terme (3-6 mois)' },
+                    { value: 'Long terme', label: 'Long terme (> 6 mois)' }
+                  ]}
                   {...form.getInputProps('Echeance')}
                   size="md"
                 />
@@ -842,7 +1093,7 @@ export default function Recommandations() {
                 <Group gap="md">
                   <Text size="xs" c="dimmed">Rapport: <strong>{selectedRecommandation.NumeroRapport}</strong></Text>
                   <Text size="xs" c="dimmed">Responsable: <strong>{selectedRecommandation.ResponsableMiseEnOeuvre || 'Non défini'}</strong></Text>
-                  <Text size="xs" c="dimmed">Échéance: <strong>{selectedRecommandation.Echeance ? dayjs(selectedRecommandation.Echeance).format('DD/MM/YYYY') : 'Non définie'}</strong></Text>
+                  <Text size="xs" c="dimmed">Échéance: <strong>{selectedRecommandation.Echeance || 'Non définie'}</strong></Text>
                 </Group>
               </Card>
 
@@ -943,9 +1194,9 @@ export default function Recommandations() {
                 </Badge>
               </Group>
             </Card>
-            
+
             <Divider />
-            
+
             <Grid>
               <Grid.Col span={12}>
                 <Text size="xs" c="dimmed">Texte de la recommandation</Text>
@@ -965,7 +1216,7 @@ export default function Recommandations() {
               </Grid.Col>
               <Grid.Col span={6}>
                 <Text size="xs" c="dimmed">Échéance</Text>
-                <Text fw={500}>{selectedRecommandation.Echeance ? dayjs(selectedRecommandation.Echeance).format('DD/MM/YYYY') : '-'}</Text>
+                <Text size="xs" c="dimmed">Échéance: <strong>{selectedRecommandation.Echeance || 'Non définie'}</strong></Text>
               </Grid.Col>
               <Grid.Col span={12}>
                 <Text size="xs" c="dimmed">Problème identifié</Text>

@@ -1,0 +1,365 @@
+// src/components/SuiviRecommandationsManager.tsx
+import React, { useEffect, useState } from 'react';
+import {
+  Box, Container, Stack, Card, Title, Text, Group, Button, Modal,
+  TextInput, Textarea, Select, Badge, ActionIcon, Tooltip, Divider,
+  ScrollArea, Table, Pagination, Avatar, Center, LoadingOverlay,
+  Paper, Grid, SimpleGrid, ThemeIcon, Menu,
+} from '@mantine/core';
+import { useDisclosure } from '@mantine/hooks';
+import {
+  IconChecklist, IconEdit, IconEye, IconSearch, IconRefresh,
+  IconInfoCircle, IconDeviceFloppy, IconCheck, IconX, IconClock,
+  IconAlertCircle, IconDownload, IconFileExcel,
+  IconPrinter
+  ,
+} from '@tabler/icons-react';
+import { invoke } from '@tauri-apps/api/core';
+import { notifications } from '@mantine/notifications';
+import * as XLSX from 'xlsx';
+import { save } from '@tauri-apps/plugin-dialog';
+import { writeFile } from '@tauri-apps/plugin-fs';
+import { usePrint } from '../hooks/usePrint';
+
+interface SuiviRecommandation {
+  SuiviID: number;
+  RecommandationID: number;
+  MesuresCorrectives?: string;
+  DateDebut?: string;
+  DateFin?: string;
+  NiveauMiseEnOeuvre?: string;
+  ObservationDelai?: string;
+  ObservationMiseEnOeuvre?: string;
+  AppreciationControle?: string;
+  ReferenceJustificatif?: string;
+  // Jointure
+  TexteRecommandation?: string;
+  NumeroRecommandation?: string;
+  Echeance?: string;
+  Services?: string;
+  ResponsableMiseEnOeuvre?: string;
+}
+
+const SuiviRecommandationsManager: React.FC = () => {
+  const [suivis, setSuivis] = useState<SuiviRecommandation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filterNiveau, setFilterNiveau] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [selectedSuivi, setSelectedSuivi] = useState<SuiviRecommandation | null>(null);
+  const [editingSuivi, setEditingSuivi] = useState<SuiviRecommandation | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [infoModalOpen, setInfoModalOpen] = useState(false);
+  const itemsPerPage = 10;
+
+  const [modalOpened, { open: openModal, close: closeModal }] = useDisclosure(false);
+  const [viewModalOpened, { open: openViewModal, close: closeViewModal }] = useDisclosure(false);
+  const { printDocument } = usePrint();
+  const [formData, setFormData] = useState({
+    RecommandationID: 0,
+    MesuresCorrectives: '',
+    DateDebut: '',
+    DateFin: '',
+    NiveauMiseEnOeuvre: 'Non commencé',
+    ObservationDelai: '',
+    ObservationMiseEnOeuvre: '',
+    AppreciationControle: '',
+    ReferenceJustificatif: '',
+  });
+
+  useEffect(() => { loadSuivis(); }, []);
+
+  const loadSuivis = async () => {
+    setLoading(true);
+    try {
+      const result = await invoke('get_recommandations');
+      setSuivis(result as SuiviRecommandation[]);
+    } catch (err) {
+      notifications.show({ title: 'Erreur', message: 'Impossible de charger les suivis', color: 'red' });
+    } finally { setLoading(false); }
+  };
+
+  const resetForm = () => {
+    setFormData({
+      RecommandationID: 0, MesuresCorrectives: '', DateDebut: '', DateFin: '',
+      NiveauMiseEnOeuvre: 'Non commencé', ObservationDelai: '', ObservationMiseEnOeuvre: '',
+      AppreciationControle: '', ReferenceJustificatif: '',
+    });
+    setEditingSuivi(null);
+  };
+
+  const openEditModal = (suivi: SuiviRecommandation) => {
+    setEditingSuivi(suivi);
+    setFormData({
+      RecommandationID: suivi.RecommandationID,
+      MesuresCorrectives: suivi.MesuresCorrectives || '',
+      DateDebut: suivi.DateDebut || '',
+      DateFin: suivi.DateFin || '',
+      NiveauMiseEnOeuvre: suivi.NiveauMiseEnOeuvre || 'Non commencé',
+      ObservationDelai: suivi.ObservationDelai || '',
+      ObservationMiseEnOeuvre: suivi.ObservationMiseEnOeuvre || '',
+      AppreciationControle: suivi.AppreciationControle || '',
+      ReferenceJustificatif: suivi.ReferenceJustificatif || '',
+    });
+    openModal();
+  };
+
+  const handleSave = async () => {
+    if (!formData.RecommandationID) {
+      notifications.show({ title: 'Erreur', message: 'Recommandation requise', color: 'red' }); return;
+    }
+    setSaving(true);
+    try {
+      await invoke('update_suivi_recommandation', { suivi: formData });
+      notifications.show({ title: 'Succès', message: 'Suivi enregistré', color: 'green' });
+      closeModal(); resetForm(); loadSuivis();
+    } catch (err: any) {
+      notifications.show({ title: 'Erreur', message: String(err), color: 'red' });
+    } finally { setSaving(false); }
+  };
+
+  const getNiveauColor = (niveau?: string) => {
+    switch (niveau) {
+      case 'Réalisée': return 'green';
+      case 'En cours': return 'blue';
+      case 'En retard': return 'orange';
+      case 'Bloquée': return 'red';
+      default: return 'gray';
+    }
+  };
+
+  const filtered = suivis.filter(s => {
+    const match = (s.TexteRecommandation || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (s.Services || '').toLowerCase().includes(searchTerm.toLowerCase());
+    const matchNiveau = !filterNiveau || s.NiveauMiseEnOeuvre === filterNiveau;
+    return match && matchNiveau;
+  });
+
+  const totalPages = Math.ceil(filtered.length / itemsPerPage);
+  const paginated = filtered.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+
+  const stats = {
+    total: suivis.length,
+    realisees: suivis.filter(s => s.NiveauMiseEnOeuvre === 'Réalisée').length,
+    enCours: suivis.filter(s => s.NiveauMiseEnOeuvre === 'En cours').length,
+    enRetard: suivis.filter(s => s.NiveauMiseEnOeuvre === 'En retard').length,
+    bloquees: suivis.filter(s => s.NiveauMiseEnOeuvre === 'Bloquée').length,
+  };
+
+  const exportExcel = async () => {
+    setExporting(true);
+    const data = filtered.map(s => ({
+      'N° Reco': s.NumeroRecommandation || '', 'Recommandation': s.TexteRecommandation || '',
+      'Niveau': s.NiveauMiseEnOeuvre || '', 'Début': s.DateDebut || '', 'Fin': s.DateFin || '',
+      'Mesures': s.MesuresCorrectives || '', 'Appréciation': s.AppreciationControle || '',
+    }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Suivis');
+    const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    const path = await save({ filters: [{ name: 'Excel', extensions: ['xlsx'] }], defaultPath: 'suivis_recommandations.xlsx' });
+    if (path) { await writeFile(path, new Uint8Array(buf)); notifications.show({ title: 'Export réussi', message: '', color: 'green' }); }
+    setExporting(false);
+  };
+
+  if (loading) {
+    return <Center style={{ height: '50vh' }}><LoadingOverlay visible /><Text>Chargement...</Text></Center>;
+  }
+
+  const handlePrint = (orientation: 'portrait' | 'landscape') => {
+
+    const rows = filtered.map((s, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td>${s.NumeroRecommandation || s.RecommandationID}</td>
+      <td>${s.TexteRecommandation || '-'}</td>
+      <td>${s.NiveauMiseEnOeuvre || '-'}</td>
+      <td>${s.DateDebut || '-'}</td>
+      <td>${s.DateFin || '-'}</td>
+      <td>${s.MesuresCorrectives || '-'}</td>
+      <td>${s.AppreciationControle || '-'}</td>
+    </tr>
+  `).join('');
+
+    const content = `
+    <table style="width:100%; border-collapse: collapse;">
+      <thead>
+        <tr style="background:#1b365d;color:white;">
+          <th>N°</th>
+          <th>Reco</th>
+          <th>Recommandation</th>
+          <th>Niveau</th>
+          <th>Début</th>
+          <th>Fin</th>
+          <th>Mesures</th>
+          <th>Appréciation</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+
+    printDocument(content, 'SUIVI DES RECOMMANDATIONS', orientation);
+  };
+  return (
+    <Box p="md">
+      <Container size="full">
+        <Stack gap="lg">
+          {/* Header */}
+          <Card withBorder radius="lg" p="xl" style={{ background: 'linear-gradient(135deg, #1b365d 0%, #2a4a7a 100%)' }}>
+            <Group justify="space-between">
+              <Group gap="md">
+                <Avatar size={60} radius="md" style={{ backgroundColor: 'rgba(255,255,255,0.2)' }}><IconChecklist size={30} color="white" /></Avatar>
+                <Box><Title order={1} c="white" size="h2">Suivi des Recommandations</Title><Text c="gray.3" size="sm">Évaluez la mise en œuvre des recommandations</Text></Box>
+              </Group>
+              <Button variant="light" color="white" leftSection={<IconInfoCircle size={18} />} onClick={() => setInfoModalOpen(true)} radius="md">Instructions</Button>
+            </Group>
+          </Card>
+
+          {/* Stats */}
+          <SimpleGrid cols={{ base: 2, md: 5 }} spacing="md">
+            {[
+              { label: 'Total', value: stats.total, color: 'blue', icon: <IconChecklist size={18} /> },
+              { label: 'Réalisées', value: stats.realisees, color: 'green', icon: <IconCheck size={18} /> },
+              { label: 'En cours', value: stats.enCours, color: 'blue', icon: <IconClock size={18} /> },
+              { label: 'En retard', value: stats.enRetard, color: 'orange', icon: <IconAlertCircle size={18} /> },
+              { label: 'Bloquées', value: stats.bloquees, color: 'red', icon: <IconX size={18} /> },
+            ].map((s, i) => (
+              <Paper key={i} p="sm" radius="md" withBorder ta="center">
+                <ThemeIcon color={s.color} variant="light" size="md" radius="md" mx="auto" mb={4}>{s.icon}</ThemeIcon>
+                <Text fw={700} size="lg" c={s.color}>{s.value}</Text>
+                <Text size="xs" c="dimmed">{s.label}</Text>
+              </Paper>
+            ))}
+          </SimpleGrid>
+
+          {/* Barre */}
+          <Card withBorder radius="lg" shadow="sm" p="md">
+            <Group justify="space-between">
+              <Group>
+                <TextInput placeholder="Rechercher..." leftSection={<IconSearch size={16} />} value={searchTerm} onChange={(e) => { setSearchTerm(e.target.value); setCurrentPage(1); }} />
+                <Select placeholder="Filtrer par niveau" data={['Non commencé', 'En cours', 'Réalisée', 'En retard', 'Bloquée']} value={filterNiveau} onChange={setFilterNiveau} clearable />
+              </Group>
+              <Group>
+                <Menu><Menu.Target><Button leftSection={<IconDownload size={16} />} variant="outline" loading={exporting}>Export</Button></Menu.Target>
+                  <Menu.Dropdown><Menu.Item leftSection={<IconFileExcel size={16} color="green" />} onClick={exportExcel}>Excel</Menu.Item></Menu.Dropdown>
+                </Menu>
+                <Tooltip label="Actualiser"><ActionIcon variant="light" onClick={loadSuivis}><IconRefresh size={18} /></ActionIcon></Tooltip>
+                <Menu shadow="md" width={160}>
+                  <Menu.Target>
+                    <Tooltip label="Imprimer">
+                      <ActionIcon variant="light" color="teal">
+                        <IconPrinter size={18} />
+                      </ActionIcon>
+                    </Tooltip>
+                  </Menu.Target>
+
+                  <Menu.Dropdown>
+                    <Menu.Item onClick={() => handlePrint('portrait')}>
+                      🧾 Portrait
+                    </Menu.Item>
+
+                    <Menu.Item onClick={() => handlePrint('landscape')}>
+                      📄 Paysage
+                    </Menu.Item>
+                  </Menu.Dropdown>
+                </Menu>
+              </Group>
+            </Group>
+          </Card>
+
+          {/* Tableau */}
+          <Card withBorder radius="lg" p={0} style={{ overflow: 'hidden' }}>
+            <ScrollArea>
+              <Table striped highlightOnHover style={{ fontSize: '12px' }}>
+                <Table.Thead style={{ backgroundColor: '#1b365d' }}>
+                  <Table.Tr>
+                    {['N° Reco', 'Recommandation', 'Niveau', 'Début', 'Fin', 'Mesures', 'Appréciation', 'Actions'].map(h => (
+                      <Table.Th key={h} style={{ color: 'white', fontSize: '11px', padding: '8px 6px' }}>{h}</Table.Th>
+                    ))}
+                  </Table.Tr>
+                </Table.Thead>
+                <Table.Tbody>
+                  {paginated.length === 0 ? (
+                    <Table.Tr><Table.Td colSpan={8} ta="center" py={40}><Text c="dimmed">Aucun suivi trouvé</Text></Table.Td></Table.Tr>
+                  ) : paginated.map(s => (
+                    <Table.Tr key={s.SuiviID || s.RecommandationID}>
+                      <Table.Td><Badge variant="light" size="xs">{s.NumeroRecommandation || s.RecommandationID}</Badge></Table.Td>
+                      <Table.Td><Text size="xs" lineClamp={2}>{s.TexteRecommandation || '-'}</Text></Table.Td>
+                      <Table.Td><Badge color={getNiveauColor(s.NiveauMiseEnOeuvre)} variant="filled" size="xs">{s.NiveauMiseEnOeuvre || 'Non commencé'}</Badge></Table.Td>
+                      <Table.Td><Text size="xs">{s.DateDebut ? new Date(s.DateDebut).toLocaleDateString('fr-FR') : '-'}</Text></Table.Td>
+                      <Table.Td><Text size="xs">{s.DateFin ? new Date(s.DateFin).toLocaleDateString('fr-FR') : '-'}</Text></Table.Td>
+                      <Table.Td><Text size="xs" lineClamp={1}>{s.MesuresCorrectives || '-'}</Text></Table.Td>
+                      <Table.Td><Badge color={s.AppreciationControle === 'Satisfaisant' ? 'green' : s.AppreciationControle === 'Non satisfaisant' ? 'red' : 'orange'} variant="light" size="xs">{s.AppreciationControle || '-'}</Badge></Table.Td>
+                      <Table.Td>
+                        <Group gap={4}>
+                          <Tooltip label="Voir"><ActionIcon variant="subtle" color="blue" size="sm" onClick={() => { setSelectedSuivi(s); openViewModal(); }}><IconEye size={14} /></ActionIcon></Tooltip>
+                          <Tooltip label="Modifier"><ActionIcon variant="subtle" color="orange" size="sm" onClick={() => openEditModal(s)}><IconEdit size={14} /></ActionIcon></Tooltip>
+                        </Group>
+                      </Table.Td>
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            </ScrollArea>
+            {totalPages > 1 && <Group justify="center" p="md"><Pagination value={currentPage} onChange={setCurrentPage} total={totalPages} color="#1b365d" /></Group>}
+          </Card>
+
+          {/* Modal Formulaire */}
+          <Modal opened={modalOpened} onClose={closeModal} title={editingSuivi ? 'Modifier le suivi' : 'Nouveau suivi'} size="lg" centered>
+            <Stack gap="md">
+              <Select label="Niveau de mise en œuvre" data={['Non commencé', 'En cours', 'Réalisée', 'En retard', 'Bloquée']} value={formData.NiveauMiseEnOeuvre} onChange={(v) => setFormData({ ...formData, NiveauMiseEnOeuvre: v || 'Non commencé' })} />
+              <Grid>
+                <Grid.Col span={6}><TextInput label="Date début" type="date" value={formData.DateDebut} onChange={(e) => setFormData({ ...formData, DateDebut: e.target.value })} /></Grid.Col>
+                <Grid.Col span={6}><TextInput label="Date fin" type="date" value={formData.DateFin} onChange={(e) => setFormData({ ...formData, DateFin: e.target.value })} /></Grid.Col>
+              </Grid>
+              <Textarea label="Mesures correctives" value={formData.MesuresCorrectives} onChange={(e) => setFormData({ ...formData, MesuresCorrectives: e.target.value })} minRows={3} />
+              <Grid>
+                <Grid.Col span={6}><Textarea label="Observation délai" value={formData.ObservationDelai} onChange={(e) => setFormData({ ...formData, ObservationDelai: e.target.value })} minRows={2} /></Grid.Col>
+                <Grid.Col span={6}><Textarea label="Observation mise en œuvre" value={formData.ObservationMiseEnOeuvre} onChange={(e) => setFormData({ ...formData, ObservationMiseEnOeuvre: e.target.value })} minRows={2} /></Grid.Col>
+              </Grid>
+              <Grid>
+                <Grid.Col span={6}><Select label="Appréciation" data={['Satisfaisant', 'Partiellement satisfaisant', 'Non satisfaisant', 'Non évalué']} value={formData.AppreciationControle} onChange={(v) => setFormData({ ...formData, AppreciationControle: v || '' })} clearable /></Grid.Col>
+                <Grid.Col span={6}><TextInput label="Référence justificatif" value={formData.ReferenceJustificatif} onChange={(e) => setFormData({ ...formData, ReferenceJustificatif: e.target.value })} /></Grid.Col>
+              </Grid>
+              <Group justify="flex-end"><Button variant="light" onClick={closeModal}>Annuler</Button><Button onClick={handleSave} loading={saving} leftSection={<IconDeviceFloppy size={16} />}>Enregistrer</Button></Group>
+            </Stack>
+          </Modal>
+
+          {/* Modal Voir détails */}
+          <Modal opened={viewModalOpened} onClose={closeViewModal} title={`Détails du suivi`} size="md" centered>
+            {selectedSuivi && (
+              <Stack gap="md">
+                <Paper p="md" withBorder bg="blue.0">
+                  <Text size="xs" fw={600}>Recommandation</Text>
+                  <Text size="sm">{selectedSuivi.TexteRecommandation}</Text>
+                </Paper>
+                <Grid>
+                  <Grid.Col span={6}><Text size="xs" c="dimmed">Niveau</Text><Badge color={getNiveauColor(selectedSuivi.NiveauMiseEnOeuvre)}>{selectedSuivi.NiveauMiseEnOeuvre}</Badge></Grid.Col>
+                  <Grid.Col span={3}><Text size="xs" c="dimmed">Début</Text><Text size="sm">{selectedSuivi.DateDebut || '-'}</Text></Grid.Col>
+                  <Grid.Col span={3}><Text size="xs" c="dimmed">Fin</Text><Text size="sm">{selectedSuivi.DateFin || '-'}</Text></Grid.Col>
+                </Grid>
+                {selectedSuivi.MesuresCorrectives && <Paper p="md" withBorder><Text size="xs" fw={600}>Mesures</Text><Text size="sm">{selectedSuivi.MesuresCorrectives}</Text></Paper>}
+                {selectedSuivi.AppreciationControle && <Paper p="md" withBorder><Text size="xs" fw={600}>Appréciation</Text><Text size="sm">{selectedSuivi.AppreciationControle}</Text></Paper>}
+                <Group justify="flex-end"><Button variant="light" onClick={closeViewModal}>Fermer</Button></Group>
+              </Stack>
+            )}
+          </Modal>
+
+          {/* Modal Instructions */}
+          <Modal opened={infoModalOpen} onClose={() => setInfoModalOpen(false)} title="📋 Instructions" size="md" centered>
+            <Stack gap="md">
+              <Text size="sm">1️⃣ Chaque recommandation a un suivi</Text>
+              <Text size="sm">2️⃣ Mettez à jour le niveau de mise en œuvre</Text>
+              <Text size="sm">3️⃣ Ajoutez les mesures correctives</Text>
+              <Text size="sm">4️⃣ Évaluez l'appréciation du contrôle</Text>
+              <Divider /><Text size="xs" c="dimmed" ta="center">Version 1.0.0</Text>
+            </Stack>
+          </Modal>
+        </Stack>
+      </Container>
+    </Box>
+  );
+};
+
+export default SuiviRecommandationsManager;

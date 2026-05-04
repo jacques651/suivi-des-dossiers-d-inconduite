@@ -1,14 +1,15 @@
 {
+  "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "Capabilities for the main window",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "core:window:default",
-    "core:app:default",
-    "core:resources:default",
-    "core:menu:default",
-    "core:tray:default",
-    "core:webview:default"
+    "dialog:allow-save",
+    "dialog:default",
+    "fs:default",
+    "fs:allow-write-file",
+    "fs:allow-write-text-file",
+    "shell:allow-open"
   ]
 }
