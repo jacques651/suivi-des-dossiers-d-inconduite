@@ -16,7 +16,7 @@ import {
   IconChecklist,
 } from '@tabler/icons-react';
 import Dashboard from './pages/Dashboard';
-import AgentManager from './pages/AgentManager';
+import AgentManager from './pages/agents/AgentManager';
 import Rapports from './pages/Rapports';
 import Dossiers from './pages/Dossiers';
 import Recommandations from './pages/Recommandations';
